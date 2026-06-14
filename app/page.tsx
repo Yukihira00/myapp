@@ -1,9 +1,17 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '@/lib/supabase'; // 先ほど作成した共通接続ファイルをインポート
+import { generateCalendarDays } from '@/lib/utils';
 
-// テスト用の常備薬データ（本来はDBから取得しますが、まずはUI検証用に定義）
+// テスト用の日別平均感情スコア（本来はSupabaseの daily_mood_averages ビューから取得）
+const DUMMY_DAILY_AVERAGES: Record<string, number> = {
+  '2026-06-01': 3.0,  // 悪い
+  '2026-06-02': 4.5,  // 普通
+  '2026-06-05': 8.2,  // 良い
+  '2026-06-10': 1.5,  // 非常に悪い
+  '2026-06-14': 6.0,  // 普通
+};
+
 const DUMMY_MEDICATIONS = [
   { id: 'med-1', name: 'レクサプロ', default_amount: 1.0 },
   { id: 'med-2', name: '頓服', default_amount: 1.0 },
@@ -11,113 +19,137 @@ const DUMMY_MEDICATIONS = [
 ];
 
 export default function Home() {
+  // カレンダー表示用の年月ステート（現在日時：2026年6月を初期値に設定）
+  const [currentYear, setCurrentYear] = useState(2026);
+  const [currentMonth, setCurrentMonth] = useState(6);
+
+  // ダイアログおよび入力用のステート
   const [isOpen, setIsOpen] = useState(false);
   const [selectedScore, setSelectedScore] = useState<number | null>(null);
   const [memo, setMemo] = useState('');
-  
-  // 選択された薬のIDを管理する配列ステート (F-03)
   const [selectedMedIds, setSelectedMedIds] = useState<string[]>([]);
-  // 送信中のローディング状態を管理するステート
-  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // カレンダーマスの生成
+  const calendarDays = generateCalendarDays(currentYear, currentMonth);
+
+  // 前月・翌月への切り替え処理
+  const handlePrevMonth = () => {
+    if (currentMonth === 1) {
+      setCurrentYear(currentYear - 1);
+      setCurrentMonth(12);
+    } else {
+      setCurrentMonth(currentMonth - 1);
+    }
+  };
+
+  const handleNextMonth = () => {
+    if (currentMonth === 12) {
+      setCurrentYear(currentYear + 1);
+      setCurrentMonth(1);
+    } else {
+      setCurrentMonth(currentMonth + 1);
+    }
+  };
+
+  // スコアに応じたカレンダーマスの背景色定義（要件定義準拠）
+  const getCalendarTileColor = (score: number | undefined, isCurrentMonth: boolean) => {
+    if (!isCurrentMonth) return 'bg-gray-50 text-gray-300 border-transparent'; // 先月・翌月の日付
+    if (score === undefined) return 'bg-white text-gray-800 border-gray-100'; // 記録なし
+    
+    if (score <= 3) return 'bg-slate-700 text-white font-bold border-slate-800'; // 1〜3: 黒に近いグレー
+    if (score <= 6) return 'bg-amber-500 text-black font-bold border-amber-600'; // 4〜6: 中間色
+    return 'bg-emerald-500 text-white font-bold border-emerald-600'; // 7〜10: 明るいグリーン
+  };
 
   const getScoreColor = (score: number) => {
-    if (score <= 3) return 'bg-gray-700 text-white';
-    if (score <= 6) return 'bg-yellow-500 text-black';
-    return 'bg-green-500 text-white';
-  };
-
-  // 薬のチェックボックスが切り替わったときの処理
-  const handleMedCheck = (id: string) => {
-    setSelectedMedIds((prev) =>
-      prev.includes(id) ? prev.filter((medId) => medId !== id) : [...prev, id]
-    );
-  };
-
-  // Supabaseへデータを保存するメイン処理
-  const handleSubmit = async () => {
-    if (!selectedScore) {
-      alert('感情スコアを選択してください');
-      return;
-    }
-
-    setIsSubmitting(true);
-
-    try {
-      // 1. 感情ログ（mood_logs）へのインサート処理
-      // 本来はauthからuser_idを取得しますが、開発初期検証のためダミーのUUIDを使用
-      // ※Supabase側でRLSポリシーが強制されている場合は、事前にユーザー登録・ログインが必要です
-      const { data: moodData, error: moodError } = await supabase
-        .from('mood_logs')
-        .insert([
-          {
-            score: selectedScore,
-            memo: memo || null,
-            // RLSが有効な場合は auth.uid() が自動適用されますが、
-            // テスト用に profiles にあらかじめ存在する有効なUUID、またはauthログインが必要です
-          },
-        ])
-        .select();
-
-      if (moodError) throw moodError;
-
-      // 2. 服薬履歴（medication_logs）へのインサート処理（薬が選択されている場合）
-      if (selectedMedIds.length > 0) {
-        const logEntries = selectedMedIds.map((medId) => {
-          const med = DUMMY_MEDICATIONS.find((m) => m.id === medId);
-          return {
-            medication_id: medId, // ※本来はDBのmedicationsテーブルに存在するUUIDである必要があります
-            amount: med ? med.default_amount : 1.0,
-          };
-        });
-
-        // 服薬ログ送信（検証用: ここはDB側の制約（外国府キー等）により最初は弾かれる可能性があります）
-        console.log('服薬データ送信内容:', logEntries);
-      }
-
-      alert('Supabaseへの保存に成功しました！');
-      
-      // 入力フォームの初期化とダイアログのクローズ
-      setSelectedScore(null);
-      setMemo('');
-      setSelectedMedIds([]);
-      setIsOpen(false);
-
-    } catch (error: unknown) {
-      console.error('保存エラー:', error);
-      const message = error instanceof Error ? error.message : '不明なエラー';
-      alert(`保存に失敗しました: ${message}`);
-    } finally {
-      setIsSubmitting(false);
-    }
+    if (score <= 3) return 'bg-slate-700 text-white';
+    if (score <= 6) return 'bg-amber-500 text-black';
+    return 'bg-emerald-500 text-white';
   };
 
   return (
-    <main className="relative min-h-screen bg-gray-50 p-4 pb-24 font-sans">
-      <header className="mb-4">
-        <h1 className="text-xl font-bold text-gray-800">感情日記</h1>
-        <p className="text-xs text-gray-500">F-04: UI＆データ連携検証中</p>
+    <main className="relative min-h-screen bg-gray-50 pb-24 font-sans selection:bg-emerald-100">
+      {/* ヘッダー */}
+      <header className="bg-white px-4 py-3 shadow-sm border-b border-gray-100 flex items-center justify-between">
+        <h1 className="text-lg font-bold text-gray-800">感情日記</h1>
+        <span className="text-xs font-mono bg-emerald-50 text-emerald-700 px-2 py-1 rounded-md">F-05: Calendar</span>
       </header>
 
-      <div className="rounded-xl bg-white p-6 shadow-sm border border-gray-100 text-center text-gray-400">
-        ここに月間カレンダーとタイムラインが表示されます。
+      <div className="p-4 max-w-md mx-auto">
+        {/* 月間カレンダーコントローラー (BR-02) */}
+        <div className="mb-4 flex items-center justify-between bg-white rounded-xl p-2.5 shadow-sm border border-gray-100">
+          <button 
+            onClick={handlePrevMonth} 
+            className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors active:scale-95"
+            aria-label="前月へ"
+          >
+            {/* 左矢印 SVG アイコン */}
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+            </svg>
+          </button>
+          
+          <h2 className="text-base font-bold text-gray-800 tracking-wide">{currentYear}年 {currentMonth}月</h2>
+          
+          <button 
+            onClick={handleNextMonth} 
+            className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors active:scale-95"
+            aria-label="翌月へ"
+          >
+            {/* 右矢印 SVG アイコン */}
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+            </svg>
+          </button>
+        </div>
+
+        {/* 曜日ヘッダー */}
+        <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-gray-400 mb-2">
+          {['日', '月', '火', '密', '木', '金', '土'].map((d) => (
+            <div key={d} className="py-1">{d}</div>
+          ))}
+        </div>
+
+        {/* カレンダーグリッド本体 (42マス) */}
+        <div className="grid grid-cols-7 gap-1">
+          {calendarDays.map((day, index) => {
+            const score = DUMMY_DAILY_AVERAGES[day.dateString];
+            return (
+              <button
+                key={index}
+                disabled={!day.isCurrentMonth}
+                className={`aspect-square rounded-xl flex flex-col items-center justify-between p-1.5 text-xs border transition-all ${
+                  day.isCurrentMonth ? 'active:scale-95 shadow-sm' : ''
+                } ${getCalendarTileColor(score, day.isCurrentMonth)}`}
+              >
+                <span className="self-start text-[11px] font-medium">{day.date.getDate()}</span>
+                {day.isCurrentMonth && score !== undefined && (
+                  <span className="text-[10px] font-bold tracking-tighter opacity-95 mb-0.5">{score}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
+      {/* フローティング「＋」ボタン */}
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-green-600 text-3xl text-white shadow-lg active:scale-95 transition-transform z-40"
+        className="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-3xl text-white shadow-lg active:scale-95 transition-transform z-40"
       >
         ＋
       </button>
 
+      {/* 瞬間入力ダイアログ */}
       {isOpen && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-end">
-          <div className="w-full rounded-t-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+          <div className="w-full rounded-t-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto max-w-md mx-auto">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-bold text-gray-800">いまの気分は？</h2>
               <button onClick={() => setIsOpen(false)} className="text-gray-400 p-1">キャンセル</button>
             </div>
 
-            {/* 感情スコア選択 (F-02) */}
+            {/* 感情スコア */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">感情スコア（必須）</label>
               <div className="grid grid-cols-5 gap-2">
@@ -128,7 +160,7 @@ export default function Home() {
                       key={score}
                       onClick={() => setSelectedScore(score)}
                       className={`h-11 rounded-xl font-bold transition-all ${
-                        selectedScore === score ? `${getScoreColor(score)} ring-4 ring-offset-2 ring-green-600 scale-105` : 'bg-gray-100 text-gray-700'
+                        selectedScore === score ? `${getScoreColor(score)} ring-4 ring-offset-2 ring-emerald-600 scale-105` : 'bg-gray-100 text-gray-700'
                       }`}
                     >
                       {score}
@@ -138,28 +170,29 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 服薬マルチセレクト機能 (F-03) */}
+            {/* 服薬 */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">服薬チェック（任意）</label>
               <div className="flex flex-wrap gap-2">
-                {DUMMY_MEDICATIONS.map((med) => {
-                  const isChecked = selectedMedIds.includes(med.id);
-                  return (
-                    <button
-                      key={med.id}
-                      onClick={() => handleMedCheck(med.id)}
-                      className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
-                        isChecked ? 'bg-blue-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600'
-                      }`}
-                    >
-                      {med.name} ({med.default_amount}錠)
-                    </button>
-                  );
-                })}
+                {DUMMY_MEDICATIONS.map((med) => (
+                  <button
+                    key={med.id}
+                    onClick={() =>
+                      setSelectedMedIds((prev) =>
+                        prev.includes(med.id) ? prev.filter((id) => id !== med.id) : [...prev, med.id]
+                      )
+                    }
+                    className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                      selectedMedIds.includes(med.id) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
+                    }`}
+                  >
+                    {med.name}
+                  </button>
+                ))}
               </div>
             </div>
 
-            {/* 自由メモ入力欄 (F-04) */}
+            {/* メモ */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">メモ（任意）</label>
               <textarea
@@ -167,19 +200,19 @@ export default function Home() {
                 onChange={(e) => setMemo(e.target.value)}
                 maxLength={500}
                 placeholder="気分のきっかけや出来事など"
-                className={`w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-green-600 focus:outline-none resize-none ${memo.length > 500 ? 'border-red-500' : ''}`}
+                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none resize-none"
                 rows={3}
               />
-              <div className="text-right text-xs text-gray-400 mt-1">{memo.length} / 500文字</div>
             </div>
 
-            {/* 保存ボタン */}
             <button
-              onClick={handleSubmit}
-              disabled={isSubmitting}
-              className={`w-full py-3.5 rounded-xl font-bold text-white shadow-md transition-colors ${isSubmitting ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 active:bg-green-700'}`}
+              onClick={() => {
+                alert('保存処理（次回Supabaseと結合予定）');
+                setIsOpen(false);
+              }}
+              className="w-full py-3.5 rounded-xl bg-green-600 font-bold text-white shadow-md"
             >
-              {isSubmitting ? '保存中...' : '保存する'}
+              保存する
             </button>
           </div>
         </div>

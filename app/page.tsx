@@ -3,11 +3,9 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { generateCalendarDays, formatDate } from '@/lib/utils';
+import { Session } from '@supabase/supabase-js';
 
-// ※テスト開発用の暫定UUID（Supabaseのprofilesテーブルに存在する有効なUUIDに置き換えてください）
-// 本来はSupabase AuthのログインユーザーID（auth.uid()）が自動適用されます
-const TEST_USER_ID = '8c2b2284-76e2-44a9-bef4-db3ab49c75f3'; 
-
+// --- 厳密な型定義（Interfaces） ---
 interface TimelineLog {
   id: string;
   time: string;
@@ -22,30 +20,49 @@ interface MedicationMaster {
   default_amount: number;
 }
 
-interface MoodLog {
+interface DailyMoodAverageRow {
+  log_date: string;
+  average_score: number;
+}
+
+interface MoodLogResponse {
   id: string;
   created_at: string;
   score: number;
   memo: string | null;
 }
 
-interface MedicationLog {
+interface MedicationNameRelation {
+  name: string;
+}
+
+interface MedicationLogResponse {
   id: string;
   logged_at: string;
   amount: number;
   medication_id: string;
-  medications: {
-    name: string;
-  };
+  medications: MedicationNameRelation | null;
+}
+
+interface SupabaseCustomError {
+  message: string;
+  code?: string;
+  details?: string | null;
 }
 
 export default function Home() {
-  // カレンダー表示用の年月ステート
+  // --- 認証用ステート ---
+  const [session, setSession] = useState<Session | null>(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authName, setAuthName] = useState(''); // 【新規追加】登録用の名前ステート
+  const [authPassword, setAuthPassword] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+
+  // --- アプリ用ステート ---
   const [currentYear, setCurrentYear] = useState(2026);
   const [currentMonth, setCurrentMonth] = useState(6);
   const [selectedDateStr, setSelectedDateStr] = useState(formatDate(new Date()));
-
-  // データベースから取得した実データを管理するステート
   const [dailyAverages, setDailyAverages] = useState<Record<string, number>>({});
   const [timelineLogs, setTimelineLogs] = useState<TimelineLog[]>([]);
   const [medicationMaster, setMedicationMaster] = useState<MedicationMaster[]>([]);
@@ -57,24 +74,40 @@ export default function Home() {
   const [selectedMedIds, setSelectedMedIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 1. 初期ロード時：常備薬マスター（medications）の取得
+  // 1. 認証状態の監視
   useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // 2. 常備薬マスターの取得
+  useEffect(() => {
+    if (!session) return;
     async function fetchMedications() {
       const { data, error } = await supabase
         .from('medications')
         .select('id, name, default_amount');
       if (!error && data) {
-        setMedicationMaster(data);
+        setMedicationMaster(data as MedicationMaster[]);
       }
     }
     fetchMedications();
-  }, []);
+  }, [session]);
 
-  // 2. カレンダー表示月変更時：1日平均感情スコア（ビュー）の取得
+  // 3. カレンダー表示月変更時の平均スコア取得
   useEffect(() => {
+    if (!session) return;
     async function fetchDailyAverages() {
       const startStartDate = `${currentYear}-${String(currentMonth).padStart(2, '0')}-01`;
-      const endEndDate = `${currentYear}-${String(currentMonth).padStart(2, '0')}-31`; // 簡易的な月内範囲指定
+      const lastDay = new Date(currentYear, currentMonth, 0).getDate();
+      const endEndDate = `${currentYear}-${String(currentMonth).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
 
       const { data, error } = await supabase
         .from('daily_mood_averages')
@@ -83,20 +116,21 @@ export default function Home() {
         .lte('log_date', endEndDate);
 
       if (!error && data) {
+        const typedData = data as DailyMoodAverageRow[];
         const averagesMap: Record<string, number> = {};
-        data.forEach((row: any) => {
+        typedData.forEach((row) => {
           averagesMap[row.log_date] = row.average_score;
         });
         setDailyAverages(averagesMap);
       }
     }
     fetchDailyAverages();
-  }, [currentYear, currentMonth]);
+  }, [currentYear, currentMonth, session, isSubmitting]);
 
-  // 3. 選択日付変更時：その日の詳細タイムラインログの取得
+  // 4. タイムライン詳細ログの取得
   useEffect(() => {
+    if (!session) return;
     async function fetchTimelineData() {
-      // 感情ログの取得
       const { data: moodData, error: moodError } = await supabase
         .from('mood_logs')
         .select('id, created_at, score, memo')
@@ -105,107 +139,137 @@ export default function Home() {
         .order('created_at', { ascending: false });
 
       if (moodError || !moodData) return;
+      const typedMoodData = moodData as MoodLogResponse[];
 
-      // 服薬ログの取得（リレーションを利用して薬の名前も同時に取得）
-      const { data: medData, error: medError } = await supabase
+      const { data: medData } = await supabase
         .from('medication_logs')
         .select('id, logged_at, amount, medication_id, medications(name)')
         .gte('logged_at', `${selectedDateStr}T00:00:00Z`)
         .lte('logged_at', `${selectedDateStr}T23:59:59Z`);
 
-      // 感情ログと服薬ログを「時間（分）」を基準にマッピングして整形
-      const formattedLogs: TimelineLog[] = moodData.map((mood: any) => {
+      const typedMedData = medData as MedicationLogResponse[] | null;
+
+      const formattedLogs: TimelineLog[] = typedMoodData.map((mood) => {
         const timeStr = new Date(mood.created_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-        
-        // 同じ日に服用した薬をフィルタリング
-        const matchedMeds = medData
-          ? medData
-              .filter((m: any) => {
-                const mTime = new Date(m.logged_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-                return mTime === timeStr; // 同じ時間帯の服薬を紐付け
-              })
-              .map((m: any) => `${m.medications?.name || '不明な薬'} (${m.amount}錠)`)
+        const matchedMeds = typedMedData
+          ? typedMedData
+              .filter((m) => new Date(m.logged_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) === timeStr)
+              .map((m) => `${m.medications?.name || '不明な薬'} (${m.amount}錠)`)
           : [];
 
-        return {
-          id: mood.id,
-          time: timeStr,
-          score: mood.score,
-          meds: matchedMeds,
-          memo: mood.memo,
-        };
+        return { id: mood.id, time: timeStr, score: mood.score, meds: matchedMeds, memo: mood.memo };
       });
-
       setTimelineLogs(formattedLogs);
     }
     fetchTimelineData();
-  }, [selectedDateStr, isSubmitting]); // 保存完了時にも再フェッチがかかるように依存配列を設定
+  }, [selectedDateStr, session, isSubmitting]);
 
-  // カレンダーマスの生成
-  const calendarDays = generateCalendarDays(currentYear, currentMonth);
+  // 5. 認証処理（ログイン・サインアップ）
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authPassword) {
+      alert('メールアドレスとパスワードを入力してください。');
+      return;
+    }
+    if (isSignUp && !authName) {
+      alert('お名前を入力してください。');
+      return;
+    }
+    setAuthLoading(true);
 
-  // 前月・翌月切り替え
-  const handlePrevMonth = () => {
-    if (currentMonth === 1) { setCurrentYear(currentYear - 1); setCurrentMonth(12); }
-    else { setCurrentMonth(currentMonth - 1); }
+    try {
+      if (isSignUp) {
+        // 【修正】新規アカウント登録時に、メタデータとして「名前」を同梱して送信
+        const { error } = await supabase.auth.signUp({
+          email: authEmail,
+          password: authPassword,
+          options: {
+            data: {
+              display_name: authName
+            }
+          }
+        });
+        if (error) throw error;
+        alert('アカウントの作成が完了し、自動的に同期されました。');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({
+          email: authEmail,
+          password: authPassword
+        });
+        if (error) throw error;
+      }
+    } catch (error: unknown) {
+      let errMsg = '不明な認証エラー';
+      if (error && typeof error === 'object' && 'message' in error) {
+        errMsg = (error as SupabaseCustomError).message;
+      }
+      alert(`認証エラー: ${errMsg}`);
+    } finally {
+      setAuthLoading(false);
+    }
   };
-  const handleNextMonth = () => {
-    if (currentMonth === 12) { setCurrentYear(currentYear + 1); setCurrentMonth(1); }
-    else { setCurrentMonth(currentMonth + 1); }
+
+  // 6. ログアウト処理
+  const handleSignOut = async () => {
+    if (confirm('ログアウトしますか？')) {
+      await supabase.auth.signOut();
+      setTimelineLogs([]);
+      setDailyAverages({});
+    }
   };
 
-  // データの保存処理
+  // 7. データの保存処理
   const handleSubmit = async () => {
     if (!selectedScore) {
       alert('感情スコアを選択してください');
       return;
     }
+    if (!session) return;
     setIsSubmitting(true);
 
     try {
       const nowIso = new Date().toISOString();
+      const currentUserId = session.user.id;
 
-      // ① mood_logsテーブルへのインサート
       const { error: moodError } = await supabase
         .from('mood_logs')
-        .insert([
-          { user_id: TEST_USER_ID, score: selectedScore, memo: memo || null, created_at: nowIso }
-        ]);
+        .insert([{ user_id: currentUserId, score: selectedScore, memo: memo || null, created_at: nowIso }]);
       if (moodError) throw moodError;
 
-      // ② medication_logsテーブルへのインサート（薬が選択されている場合）
       if (selectedMedIds.length > 0) {
         const medInserts = selectedMedIds.map((medId) => {
           const med = medicationMaster.find((m) => m.id === medId);
           return {
-            user_id: TEST_USER_ID,
+            user_id: currentUserId,
             medication_id: medId,
             amount: med ? med.default_amount : 1.0,
             logged_at: nowIso
           };
         });
-
-        const { error: medError } = await supabase
-          .from('medication_logs')
-          .insert(medInserts);
+        const { error: medError } = await supabase.from('medication_logs').insert(medInserts);
         if (medError) throw medError;
       }
 
-      alert('データを安全に同期しました。');
+      alert('型セーフな本物の権限でデータを同期しました！');
       setSelectedScore(null);
       setMemo('');
       setSelectedMedIds([]);
       setIsOpen(false);
-
     } catch (error: unknown) {
-      console.error('同期エラー:', error);
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      alert(`同期失敗: ${errorMessage}`);
+      let errMsg = '不明な同期エラー';
+      if (error && typeof error === 'object' && 'message' in error) {
+        errMsg = (error as SupabaseCustomError).message;
+      }
+      alert(`同期失敗: ${errMsg}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const calendarDays = generateCalendarDays(currentYear, currentMonth);
+  const handlePrevMonth = () => { if (currentMonth === 1) { setCurrentYear(currentYear - 1); setCurrentMonth(12); } else { setCurrentMonth(currentMonth - 1); } };
+  const handleNextMonth = () => { if (currentMonth === 12) { setCurrentYear(currentYear + 1); setCurrentMonth(1); } else { setCurrentMonth(currentMonth + 1); } };
+  
   const getCalendarTileColor = (score: number | undefined, isCurrentMonth: boolean, dateString: string) => {
     const isSelected = dateString === selectedDateStr;
     const baseBorder = isSelected ? 'border-blue-600 ring-2 ring-blue-600/30' : 'border-gray-100';
@@ -216,15 +280,90 @@ export default function Home() {
     return `bg-emerald-500 text-white font-bold ${isSelected ? 'border-blue-400 ring-2 ring-blue-400/50' : 'border-emerald-600'}`;
   };
 
+  if (!session) {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center p-4 font-sans">
+        <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-xl border border-gray-100 space-y-6">
+          <div className="text-center">
+            <h1 className="text-xl font-bold text-gray-800">感情日記</h1>
+            <p className="text-xs text-gray-400 mt-1">F-01: ユーザー認証ゲートウェイ（3項目対応版）</p>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            {/* 【修正】新規アカウント登録モード（isSignUp == true）の時のみ「名前」の入力フィールドを表示 */}
+            {isSignUp && (
+              <div>
+                <label className="block text-xs font-bold text-gray-600 uppercase mb-1">お名前（表示名）</label>
+                <input
+                  type="text"
+                  value={authName}
+                  onChange={(e) => setAuthName(e.target.value)}
+                  placeholder="例：りおな"
+                  className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
+                  required={isSignUp}
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase mb-1">メールアドレス</label>
+              <input
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                placeholder="you@example.com"
+                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-600 uppercase mb-1">パスワード</label>
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={authLoading}
+              className="w-full py-3.5 rounded-xl bg-emerald-600 font-bold text-white shadow-md active:bg-emerald-700 transition-colors disabled:bg-gray-300"
+            >
+              {authLoading ? '処理中...' : isSignUp ? '新規アカウント登録' : 'ログインする'}
+            </button>
+          </form>
+
+          <div className="text-center">
+            <button
+              onClick={() => {
+                setIsSignUp(!isSignUp);
+                setAuthName(''); // 切り替え時にフォームをクリア
+              }}
+              className="text-xs text-emerald-600 font-bold hover:underline"
+            >
+              {isSignUp ? 'すでにアカウントをお持ちですか？ ログイン' : '初めてですか？ 新規アカウント作成'}
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="relative min-h-screen bg-gray-50 pb-28 font-sans antialiased">
       <header className="bg-white px-4 py-3 shadow-sm border-b border-gray-100 flex items-center justify-between sticky top-0 z-30">
         <h1 className="text-lg font-bold text-gray-800">感情日記</h1>
-        <span className="text-xs font-mono bg-blue-50 text-blue-700 px-2 py-1 rounded-md">DB Integration</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-gray-400 max-w-[120px] truncate font-mono">{session.user.email}</span>
+          <button onClick={handleSignOut} className="text-xs font-bold text-red-500 hover:underline bg-red-50 px-2 py-1 rounded">離脱</button>
+        </div>
       </header>
 
       <div className="p-4 max-w-md mx-auto space-y-4">
-        {/* カレンダーコントローラー */}
         <div className="flex items-center justify-between bg-white rounded-xl p-2.5 shadow-sm border border-gray-100">
           <button onClick={handlePrevMonth} className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors active:scale-95">
             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
@@ -239,14 +378,10 @@ export default function Home() {
           </button>
         </div>
 
-        {/* 曜日ヘッダー */}
         <div className="grid grid-cols-7 gap-1 text-center text-xs font-medium text-gray-400">
-          {['日', '月', '火', '水', '木', '金', '土'].map((d) => (
-            <div key={d} className="py-1">{d}</div>
-          ))}
+          {['日', '月', '火', '水', '木', '金', '土'].map((d) => <div key={d} className="py-1">{d}</div>)}
         </div>
 
-        {/* カレンダーグリッド */}
         <div className="grid grid-cols-7 gap-1">
           {calendarDays.map((day, index) => {
             const score = dailyAverages[day.dateString];
@@ -268,19 +403,14 @@ export default function Home() {
           })}
         </div>
 
-        {/* タイムライン詳細表示 */}
         <div className="pt-2">
           <div className="flex items-center justify-between mb-3 px-1">
-            <h3 className="text-sm font-bold text-gray-700">
-              {selectedDateStr.split('-')[1]}月{selectedDateStr.split('-')[2]}日の詳細ログ
-            </h3>
+            <h3 className="text-sm font-bold text-gray-700">{selectedDateStr.split('-')[1]}月{selectedDateStr.split('-')[2]}日の詳細ログ</h3>
             <span className="text-xs text-gray-400 font-medium">{timelineLogs.length} 件の記録</span>
           </div>
 
           {timelineLogs.length === 0 ? (
-            <div className="rounded-xl bg-white p-8 text-center text-sm text-gray-400 border border-gray-100 shadow-sm">
-              この日のライフログはありません。
-            </div>
+            <div className="rounded-xl bg-white p-8 text-center text-sm text-gray-400 border border-gray-100 shadow-sm">この日のライフログはありません。</div>
           ) : (
             <div className="relative border-l-2 border-gray-200 ml-3.5 pl-5 space-y-4">
               {timelineLogs.map((log) => (
@@ -310,15 +440,8 @@ export default function Home() {
         </div>
       </div>
 
-      {/* フフローティング「＋」ボタン */}
-      <button
-        onClick={() => setIsOpen(true)}
-        className="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-3xl text-white shadow-lg active:scale-95 transition-transform z-40"
-      >
-        ＋
-      </button>
+      <button onClick={() => setIsOpen(true)} className="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-3xl text-white shadow-lg active:scale-95 z-40">＋</button>
 
-      {/* 瞬間入力ダイアログ */}
       {isOpen && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-end">
           <div className="w-full rounded-t-2xl bg-white p-6 shadow-xl max-h-[90vh] overflow-y-auto max-w-md mx-auto">
@@ -327,7 +450,6 @@ export default function Home() {
               <button onClick={() => setIsOpen(false)} className="text-gray-400 p-1">キャンセル</button>
             </div>
 
-            {/* 感情スコア */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">感情スコア（必須）</label>
               <div className="grid grid-cols-5 gap-2">
@@ -337,9 +459,7 @@ export default function Home() {
                     <button
                       key={score}
                       onClick={() => setSelectedScore(score)}
-                      className={`h-11 rounded-xl font-bold transition-all ${
-                        selectedScore === score ? `bg-emerald-600 text-white ring-4 ring-offset-2 ring-emerald-600 scale-105` : 'bg-gray-100 text-gray-700'
-                      }`}
+                      className={`h-11 rounded-xl font-bold transition-all ${selectedScore === score ? `bg-emerald-600 text-white ring-4 ring-offset-2 ring-emerald-600 scale-105` : 'bg-gray-100 text-gray-700'}`}
                     >
                       {score}
                     </button>
@@ -348,7 +468,6 @@ export default function Home() {
               </div>
             </div>
 
-            {/* 常備薬実データに基づくチェック選択 */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">服薬チェック（任意）</label>
               <div className="flex flex-wrap gap-2">
@@ -358,14 +477,8 @@ export default function Home() {
                   medicationMaster.map((med) => (
                     <button
                       key={med.id}
-                      onClick={() =>
-                        setSelectedMedIds((prev) =>
-                          prev.includes(med.id) ? prev.filter((id) => id !== med.id) : [...prev, med.id]
-                        )
-                      }
-                      className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
-                        selectedMedIds.includes(med.id) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'
-                      }`}
+                      onClick={() => setSelectedMedIds((prev) => prev.includes(med.id) ? prev.filter((id) => id !== med.id) : [...prev, med.id])}
+                      className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${selectedMedIds.includes(med.id) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600'}`}
                     >
                       {med.name}
                     </button>
@@ -374,24 +487,12 @@ export default function Home() {
               </div>
             </div>
 
-            {/* メモ */}
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 mb-2">メモ（任意）</label>
-              <textarea
-                value={memo}
-                onChange={(e) => setMemo(e.target.value)}
-                maxLength={500}
-                placeholder="気分のきっかけや出来事など"
-                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none resize-none"
-                rows={3}
-              />
+              <textarea value={memo} onChange={(e) => setMemo(e.target.value)} maxLength={500} placeholder="気分のきっかけや出来事など" className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none resize-none" rows={3} />
             </div>
 
-            <button
-              onClick={handleSubmit}
-              disabled={isSubmitting}
-              className="w-full py-3.5 rounded-xl bg-emerald-600 font-bold text-white shadow-md disabled:bg-gray-400"
-            >
+            <button onClick={handleSubmit} disabled={isSubmitting} className="w-full py-3.5 rounded-xl bg-emerald-600 font-bold text-white shadow-md disabled:bg-gray-400">
               {isSubmitting ? '同期中...' : '保存して同期'}
             </button>
           </div>

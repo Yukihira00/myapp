@@ -1,17 +1,33 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Session } from '@supabase/supabase-js';
-import Link from 'next/link';
-import NavigationBar from '@/app/components/NavigationBar';
 
-// --- 厳密な型定義（Interfaces） ---
+// 共通パーツのインポート
+import NavigationBar from '@/app/components/NavigationBar';
+import { FloatingActionButton } from '@/app/components/FloatingActionButton';
+import { AddEntryModal } from '@/app/components/AddEntryModal';
+
+// 統計専用子コンポーネント群のインポート
+import { StatsSummaryCard } from '@/app/components/stats/StatsSummaryCard';
+import { StatsLineChart } from '@/app/components/stats/StatsLineChart';
+import { StatsDistribution } from '@/app/components/stats/StatsDistribution';
+
+type RangeMode = 'day' | 'week' | 'month' | 'year';
+
 interface StatDataPoint {
-  dateStr: string;     // YYYY-MM-DD
-  displayLabel: string; // MM/DD
+  dateStr: string;
+  displayLabel: string;
   avgScore: number | null;
   medCount: number;
+}
+
+interface MedicationMaster {
+  id: string;
+  name: string;
+  default_amount: number;
 }
 
 interface DBResponseMood {
@@ -27,45 +43,73 @@ interface SupabaseCustomError {
   message: string;
 }
 
+const SCORE_COLORS = [
+  { bg: '#1A1A1A', text: '#FFFFFF' }, { bg: '#2E2E2E', text: '#FFFFFF' },
+  { bg: '#484848', text: '#FFFFFF' }, { bg: '#6B5840', text: '#FFFFFF' },
+  { bg: '#9B8464', text: '#FFFFFF' }, { bg: '#B8A882', text: '#2A2A2A' },
+  { bg: '#C8D878', text: '#2A2A2A' }, { bg: '#D8EC96', text: '#2A2A2A' },
+  { bg: '#E8F5B0', text: '#2A2A2A' }, { bg: '#F5FAD0', text: '#2A2A2A' },
+];
+
+const getScoreColor = (score: number) =>
+  SCORE_COLORS[Math.min(Math.max(Math.round(score), 1), 10) - 1];
+
+const getInitialDateTimeString = (): string => {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 16);
+};
+
 export default function StatsPage() {
-  // 認証用ステート
+  const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
-
-  // 統計画面用ステート
-  const [rangeMode, setRangeMode] = useState<'week' | 'month'>('week'); // 7日間 or 30日間
+  
+  const [rangeMode, setRangeMode] = useState<RangeMode>('month');
   const [statsData, setStatsData] = useState<StatDataPoint[]>([]);
+  const [displayRangeText, setDisplayRangeText] = useState<string>('');
   const [isLoadingData, setIsLoadingData] = useState(false);
 
-  // 1. 認証状態の監視
+  // モーダル記録用ステート
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedScore, setSelectedScore] = useState<number | null>(null);
+  const [memo, setMemo] = useState('');
+  const [selectedMedIds, setSelectedMedIds] = useState<string[]>([]);
+  const [logDateTime, setLogDateTime] = useState('');
+  const [medicationMaster, setMedicationMaster] = useState<MedicationMaster[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoadingAuth(false);
     });
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       setLoadingAuth(false);
     });
-
     return () => subscription.unsubscribe();
   }, []);
 
-  // 2. 指定された範囲のダミーの器（日付配列）を日本時間基準で生成する関数
+  useEffect(() => {
+    if (!session) return;
+    async function fetchMedications() {
+      const { data, error } = await supabase.from('medications').select('id, name, default_amount');
+      if (!error && data) setMedicationMaster(data as MedicationMaster[]);
+    }
+    fetchMedications();
+  }, [session]);
+
   const generateDateRangeBuckets = (days: number): StatDataPoint[] => {
     const buckets: StatDataPoint[] = [];
     const now = new Date();
-    
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      const yyyy = d.getFullYear();
       const mm = String(d.getMonth() + 1).padStart(2, '0');
       const dd = String(d.getDate()).padStart(2, '0');
-      
       buckets.push({
-        dateStr: `${yyyy}-${mm}-${dd}`,
-        displayLabel: `${mm}/${dd}`,
+        dateStr: `${d.getFullYear()}-${mm}-${dd}`,
+        displayLabel: `${d.getMonth() + 1}/${dd}`,
         avgScore: null,
         medCount: 0,
       });
@@ -73,212 +117,229 @@ export default function StatsPage() {
     return buckets;
   };
 
-  // 3. 期間変更またはセッション確定時に実データを集計する処理
   useEffect(() => {
     if (!session) return;
 
     async function fetchAndAggregateStats() {
       setIsLoadingData(true);
-      const totalDays = rangeMode === 'week' ? 7 : 30;
-      const dateBuckets = generateDateRangeBuckets(totalDays);
-
-      // 検索開始の境界日時（日本時間基準の00:00）
-      const startDateStr = dateBuckets[0].dateStr;
-      const startIso = `${startDateStr}T00:00:00+09:00`;
+      const now = new Date();
+      let computedStats: StatDataPoint[] = [];
+      let startIso = '';
+      let rangeText = '';
 
       try {
-        // ① 感情ログの取得
-        const { data: moodData, error: moodError } = await supabase
-          .from('mood_logs')
-          .select('created_at, score')
-          .gte('created_at', startIso)
-          .order('created_at', { ascending: true });
+        if (rangeMode === 'day') {
+          const yyyy = now.getFullYear();
+          const mm = String(now.getMonth() + 1).padStart(2, '0');
+          const dd = String(now.getDate()).padStart(2, '0');
+          const todayStr = `${yyyy}-${mm}-${dd}`;
+          startIso = `${todayStr}T00:00:00+09:00`;
+          const endIso = `${todayStr}T23:59:59+09:00`;
+          rangeText = `表示範囲: ${yyyy}年${mm}月${dd}日 (今日)`;
 
-        if (moodError) throw moodError;
-        const typedMoods = moodData as DBResponseMood[];
+          const { data: moodData } = await supabase.from('mood_logs').select('created_at, score').gte('created_at', startIso).lte('created_at', endIso);
+          const { data: medData } = await supabase.from('medication_logs').select('logged_at').gte('logged_at', startIso).lte('logged_at', endIso);
 
-        // ② 服薬ログの取得
-        const { data: medData, error: medError } = await supabase
-          .from('medication_logs')
-          .select('logged_at')
-          .gte('logged_at', startIso);
+          for (let h = 0; h < 24; h++) {
+            const label = `${String(h).padStart(2, '0')}:00`;
+            const hourMoods = (moodData || []).filter(m => new Date(m.created_at).getHours() === h);
+            const hourMedsCount = (medData || []).filter(m => new Date(m.logged_at).getHours() === h).length;
 
-        if (medError) throw medError;
-        const typedMeds = medData as DBResponseMed[];
-
-        // ③ 日付バケットへのマッピング・集計
-        const computedStats = dateBuckets.map((bucket) => {
-          // 該当日に該当する感情ログを抽出
-          const dayMoods = typedMoods.filter((m) => {
-            const localDate = new Date(m.created_at).toLocaleDateString('ja-JP', {
-              year: 'numeric', month: '2-digit', day: '2-digit'
-            }).replace(/\//g, '-');
-            return localDate === bucket.dateStr;
-          });
-
-          // 該当日に該当する服薬ログを抽出
-          const dayMedsCount = typedMeds.filter((m) => {
-            const localDate = new Date(m.logged_at).toLocaleDateString('ja-JP', {
-              year: 'numeric', month: '2-digit', day: '2-digit'
-            }).replace(/\//g, '-');
-            return localDate === bucket.dateStr;
-          }).length;
-
-          // 平均感情スコアの計算（小数点第1位まで）
-          let avgScore: number | null = null;
-          if (dayMoods.length > 0) {
-            const sum = dayMoods.reduce((acc, cur) => acc + cur.score, 0);
-            avgScore = Math.round((sum / dayMoods.length) * 10) / 10;
+            let avgScore: number | null = null;
+            if (hourMoods.length > 0) {
+              avgScore = Math.round((hourMoods.reduce((acc, cur) => acc + cur.score, 0) / hourMoods.length) * 10) / 10;
+            }
+            computedStats.push({ dateStr: `${todayStr} ${label}`, displayLabel: label, avgScore, medCount: hourMedsCount });
           }
 
-          return {
-            ...bucket,
-            avgScore,
-            medCount: dayMedsCount,
-          };
-        });
+        } else if (rangeMode === 'week' || rangeMode === 'month') {
+          const totalDays = rangeMode === 'week' ? 7 : 30;
+          const dateBuckets = generateDateRangeBuckets(totalDays);
+          startIso = `${dateBuckets[0].dateStr}T00:00:00+09:00`;
+          rangeText = `表示範囲: ${dateBuckets[0].dateStr.replace(/-/g, '/')} 〜 ${dateBuckets[dateBuckets.length - 1].dateStr.replace(/-/g, '/')}`;
+
+          const { data: moodData } = await supabase.from('mood_logs').select('created_at, score').gte('created_at', startIso);
+          const { data: medData } = await supabase.from('medication_logs').select('logged_at').gte('logged_at', startIso);
+
+          computedStats = dateBuckets.map((bucket) => {
+            const dayMoods = (moodData || []).filter(m => {
+              const d = new Date(m.created_at);
+              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` === bucket.dateStr;
+            });
+            const dayMedsCount = (medData || []).filter(m => {
+              const d = new Date(m.logged_at);
+              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` === bucket.dateStr;
+            }).length;
+
+            let avgScore: number | null = null;
+            if (dayMoods.length > 0) {
+              avgScore = Math.round((dayMoods.reduce((acc, cur) => acc + cur.score, 0) / dayMoods.length) * 10) / 10;
+            }
+            return { ...bucket, avgScore, medCount: dayMedsCount };
+          });
+
+        } else if (rangeMode === 'year') {
+          const buckets: StatDataPoint[] = [];
+          for (let i = 11; i >= 0; i--) {
+            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            buckets.push({ dateStr: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, displayLabel: `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`, avgScore: null, medCount: 0 });
+          }
+          startIso = `${buckets[0].dateStr}-01T00:00:00+09:00`;
+          rangeText = `表示範囲: ${buckets[0].displayLabel} 〜 ${buckets[buckets.length - 1].displayLabel}`;
+
+          const { data: moodData } = await supabase.from('mood_logs').select('created_at, score').gte('created_at', startIso);
+          const { data: medData } = await supabase.from('medication_logs').select('logged_at').gte('logged_at', startIso);
+
+          computedStats = buckets.map((bucket) => {
+            const monthMoods = (moodData || []).filter(m => `${new Date(m.created_at).getFullYear()}-${String(new Date(m.created_at).getMonth() + 1).padStart(2, '0')}` === bucket.dateStr);
+            const monthMedsCount = (medData || []).filter(m => `${new Date(m.logged_at).getFullYear()}-${String(new Date(m.logged_at).getMonth() + 1).padStart(2, '0')}` === bucket.dateStr).length;
+
+            let avgScore: number | null = null;
+            if (monthMoods.length > 0) {
+              avgScore = Math.round((monthMoods.reduce((acc, cur) => acc + cur.score, 0) / monthMoods.length) * 10) / 10;
+            }
+            return { ...bucket, avgScore, medCount: monthMedsCount };
+          });
+        }
 
         setStatsData(computedStats);
+        setDisplayRangeText(rangeText);
       } catch (error: unknown) {
-        let errMsg = 'データの集計に失敗しました。';
-        if (error && typeof error === 'object' && 'message' in error) {
-          errMsg = (error as SupabaseCustomError).message;
-        }
-        alert(errMsg);
+        console.error(error);
       } finally {
         setIsLoadingData(false);
       }
     }
 
     fetchAndAggregateStats();
-  }, [rangeMode, session]);
+  }, [rangeMode, session, isSubmitting]);
+
+  const handleSubmit = async () => {
+    if (!selectedScore) return alert('スコアを選択してください');
+    if (!session) return;
+    setIsSubmitting(true);
+    try {
+      const now = new Date();
+      const targetDate = new Date(`${logDateTime}:00+09:00`);
+      targetDate.setSeconds(now.getSeconds()); targetDate.setMilliseconds(now.getMilliseconds());
+
+      if (targetDate > now) {
+        alert('エラー：未来の日時指定はできません。');
+        setIsSubmitting(false); return;
+      }
+
+      const targetIsoString = targetDate.toISOString();
+      const currentUserId = session.user.id;
+
+      const { error: moodError } = await supabase.from('mood_logs').insert([{ user_id: currentUserId, score: selectedScore, memo: memo || null, created_at: targetIsoString }]);
+      if (moodError) throw moodError;
+
+      if (selectedMedIds.length > 0) {
+        const medInserts = selectedMedIds.map((medId) => ({
+          user_id: currentUserId, medication_id: medId,
+          amount: medicationMaster.find((m) => m.id === medId)?.default_amount || 1.0,
+          logged_at: targetIsoString
+        }));
+        const { error: medError } = await supabase.from('medication_logs').insert(medInserts);
+        if (medError) throw medError;
+      }
+
+      alert('データを同期しました！');
+      setSelectedScore(null); setMemo(''); setSelectedMedIds([]); setIsOpen(false);
+    } catch (error: unknown) {
+      alert(`同期失敗: ${(error as SupabaseCustomError).message}`);
+    } finally { setIsSubmitting(false); }
+  };
+
+  const handleOpenDialog = () => {
+    setLogDateTime(getInitialDateTimeString());
+    setIsOpen(true);
+  };
 
   if (loadingAuth) {
-    return <div className="min-h-screen bg-gray-50 flex items-center justify-center text-sm text-gray-500">認証確認中...</div>;
+    return <div style={{ minHeight: '100vh', backgroundColor: '#FAF7F2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: '#8A8278' }}>認証確認中...</div>;
   }
 
   if (!session) {
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-4">
-        <p className="text-sm text-gray-600 mb-4">統計情報を見るにはログインが必要です。</p>
-        <Link href="/" className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-bold">ログイン画面へ</Link>
+      <div style={{ minHeight: '100vh', backgroundColor: '#FAF7F2', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <p style={{ fontSize: 14, color: '#5A5450', marginBottom: 16 }}>統計情報を見るにはログインが必要です。</p>
+        <button onClick={() => router.push('/')} style={{ padding: '10px 20px', backgroundColor: '#7CB88A', color: '#FFFFFF', border: 'none', borderRadius: 12, fontWeight: 'bold', cursor: 'pointer' }}>ログイン画面へ</button>
       </div>
     );
   }
 
-  return (
-    <main className="min-h-screen bg-gray-50 pb-12 font-sans antialiased">
-      {/* ヘッダーナビゲーション */}
-      <header className="bg-white px-4 py-3 shadow-sm border-b border-gray-100 flex items-center sticky top-0 z-30">
-        <Link href="/" className="p-2 text-gray-600 hover:bg-gray-50 rounded-lg transition-colors mr-2">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-          </svg>
-        </Link>
-        <h1 className="text-lg font-bold text-gray-800">相関分析・統計</h1>
-      </header>
+  const filteredScores = statsData.filter(d => d.avgScore !== null).map(d => d.avgScore as number);
+  const avgAll = filteredScores.length ? filteredScores.reduce((a, b) => a + b, 0) / filteredScores.length : 0;
+  const goodDaysCount = filteredScores.filter(s => s >= 7).length;
+  const medium = filteredScores.filter(s => s >= 4 && s < 7).length;
+  const bad = filteredScores.filter(s => s < 4).length;
+  const total = filteredScores.length || 1;
+  const goodPct = Math.round((goodDaysCount / total) * 100);
+  const medPct = Math.round((medium / total) * 100);
+  const badPct = 100 - goodPct - medPct;
 
-      <div className="p-4 max-w-md mx-auto space-y-4">
-        {/* 期間切り替えセグメントコントローラー */}
-        <div className="grid grid-cols-2 gap-1 bg-gray-200 p-1 rounded-xl">
-          <button
-            onClick={() => setRangeMode('week')}
-            className={`py-2 text-xs font-bold rounded-lg transition-all ${rangeMode === 'week' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            直近 7 日間
-          </button>
-          <button
-            onClick={() => setRangeMode('month')}
-            className={`py-2 text-xs font-bold rounded-lg transition-all ${rangeMode === 'month' ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            直近 30 日間
-          </button>
+  return (
+    <div style={{ minHeight: '100vh', backgroundColor: '#FAF7F2', display: 'flex', justifyContent: 'center', fontFamily: 'Nunito, sans-serif' }}>
+      <div style={{ position: 'relative', width: '100%', maxWidth: 420, height: '100vh', backgroundColor: '#FAF7F2', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        
+        <div style={{ flexShrink: 0, padding: '16px 20px 4px', display: 'flex', alignItems: 'center', backgroundColor: '#FAF7F2' }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: '#2A2420', margin: 0 }}>統計レポート</h1>
         </div>
 
-        {/* グラフカード基盤 */}
-        <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-bold text-gray-700">気分と服薬の推移</h2>
-            <div className="flex items-center gap-3 text-[10px] font-bold">
-              <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 block" />感情</div>
-              <div className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-400 block" />服薬回数</div>
+        <div className="overflow-y-auto flex-1 pb-4" style={{ scrollbarWidth: 'none', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, padding: '0 16px' }}>
+          
+          <div style={{ marginTop: 4 }}>
+            <div style={{ display: 'flex', backgroundColor: '#EDE8E0', borderRadius: 999, padding: 4, gap: 2 }}>
+              {(['day', 'week', 'month', 'year'] as const).map((mode) => {
+                const labels = { day: '日', week: '週', month: '月', year: '年' };
+                return (
+                  <button
+                    key={mode}
+                    onClick={() => setRangeMode(mode)}
+                    style={{ flex: 1, padding: '8px 0', borderRadius: 999, border: 'none', cursor: 'pointer', transition: 'all 0.2s', fontWeight: 700, fontSize: 13,
+                      backgroundColor: rangeMode === mode ? '#7CB88A' : 'transparent',
+                      color: rangeMode === mode ? '#FFFFFF' : '#6B6060' }}
+                  >
+                    {labels[mode]}
+                  </button>
+                );
+              })}
             </div>
+          </div>
+
+          <div style={{ textAlign: 'center', padding: '2px 0 4px' }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#8A8278', backgroundColor: '#F0EBE3', padding: '4px 14px', borderRadius: 999 }}>
+              {displayRangeText}
+            </span>
           </div>
 
           {isLoadingData ? (
-            <div className="h-64 flex items-center justify-center text-xs text-gray-400">データを収集中...</div>
+            <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, color: '#8A8278' }}>データを分析中...</div>
           ) : (
-            /* CSS Gridによる横スクロール可能なカスタムグラフコンポーネント */
-            <div className="w-full overflow-x-auto pt-4 scrollbar-none">
-              <div className="flex items-end h-64 border-b border-gray-200 pb-2 space-x-2" style={{ minWidth: rangeMode === 'week' ? '100%' : '640px' }}>
-                {statsData.map((data, index) => {
-                  // 高さ計算（感情スコアはMAX10なので10倍、服薬はMAX5回想定で20倍にスケール）
-                  const scoreHeight = data.avgScore ? `${data.avgScore * 8}%` : '0%';
-                  const medHeight = data.medCount ? `${Math.min(data.medCount * 20, 100)}%` : '0%';
-
-                  return (
-                    <div key={index} className="flex-1 flex flex-col items-center h-full justify-end relative group">
-                      {/* 1. 服薬回数のバー（背面・薄いブルー） */}
-                      {data.medCount > 0 && (
-                        <div 
-                          style={{ height: medHeight }} 
-                          className="w-full max-w-[14px] bg-blue-400/40 rounded-t-sm absolute bottom-0 z-10 transition-all group-hover:bg-blue-400/60"
-                        />
-                      )}
-
-                      {/* 2. 感情スコアのインジケーター（前面・丸ピン） */}
-                      {data.avgScore !== null ? (
-                        <div 
-                          style={{ bottom: scoreHeight }} 
-                          className={`w-3 h-3 rounded-full absolute z-20 shadow-sm transition-transform group-hover:scale-125 border border-white ${
-                            data.avgScore <= 3 ? 'bg-slate-600' : data.avgScore <= 6 ? 'bg-amber-500' : 'bg-emerald-500'
-                          }`}
-                        >
-                          {/* ホバー時に数値をポップアップ表示 */}
-                          <span className="absolute -top-6 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[9px] font-mono px-1 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-30">
-                            評: {data.avgScore} / 薬: {data.medCount}回
-                          </span>
-                        </div>
-                      ) : (
-                        /* データがない日は極小のドットを配置 */
-                        <div className="w-1 h-1 bg-gray-200 rounded-full absolute bottom-1/2" />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* X軸のラベル（日付） */}
-              <div className="flex space-x-2 pt-1.5 text-[9px] font-mono text-gray-400" style={{ minWidth: rangeMode === 'week' ? '100%' : '640px' }}>
-                {statsData.map((data, index) => (
-                  <div key={index} className="flex-1 text-center truncate">
-                    {rangeMode === 'week' ? data.displayLabel : index % 3 === 0 ? data.displayLabel : ''}
-                  </div>
-                ))}
-              </div>
-            </div>
+            <>
+              <StatsSummaryCard avgAll={avgAll} totalEntries={filteredScores.length} goodDaysCount={goodDaysCount} />
+              <StatsLineChart statsData={statsData} rangeMode={rangeMode} getScoreColor={getScoreColor} />
+              <StatsDistribution goodPct={goodPct} medPct={medPct} badPct={badPct} />
+            </>
           )}
         </div>
 
-        {/* 統計概要サマリー情報 */}
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-            <p className="text-[10px] font-bold text-gray-400 uppercase">期間内最高気分</p>
-            <p className="text-xl font-black text-emerald-600 mt-0.5">
-              {statsData.filter(d => d.avgScore !== null).length > 0 
-                ? `${Math.max(...statsData.map(d => d.avgScore || 0))}` 
-                : '--'}
-            </p>
-          </div>
-          <div className="bg-white rounded-xl p-3 border border-gray-100 shadow-sm">
-            <p className="text-[10px] font-bold text-gray-400 uppercase">総服薬回数</p>
-            <p className="text-xl font-black text-blue-500 mt-0.5">
-              {statsData.reduce((acc, cur) => acc + cur.medCount, 0)} <span className="text-xs font-normal text-gray-400">回</span>
-            </p>
-          </div>
-        </div>
+        {/* 共通パーツ化されたプラスボタン */}
+        <FloatingActionButton onClick={handleOpenDialog} />
+
+        {/* 記録追加モーダル */}
+        {isOpen && (
+          <AddEntryModal 
+            onClose={() => setIsOpen(false)} logDateTime={logDateTime} onLogDateTimeChange={setLogDateTime}
+            selectedScore={selectedScore} onSelectScore={setSelectedScore} medicationMaster={medicationMaster}
+            selectedMedIds={selectedMedIds} onToggleMedId={(id) => setSelectedMedIds(prev => prev.includes(id) ? prev.filter(mId => mId !== id) : [...prev, id])}
+            memo={memo} onMemoChange={setMemo} onSubmit={handleSubmit} isSubmitting={isSubmitting}
+          />
+        )}
+
+        <NavigationBar />
       </div>
-    <NavigationBar />
-    </main>
+    </div>
   );
 }

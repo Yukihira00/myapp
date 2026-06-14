@@ -371,14 +371,26 @@ export default function StatsPage() {
     );
   }
 
+// データ集計・5段階の割合計算
   const filteredScores = statsData.filter(d => d.avgScore !== null).map(d => d.avgScore as number);
   const avgAll = filteredScores.length ? filteredScores.reduce((a, b) => a + b, 0) / filteredScores.length : 0;
-  const goodDaysCount = filteredScores.filter(s => s >= 7).length;
-  const medium = filteredScores.filter(s => s >= 4 && s < 7).length;
-  const total = filteredScores.length || 1;
-  const goodPct = Math.round((goodDaysCount / total) * 100);
-  const medPct = Math.round((medium / total) * 100);
-  const badPct = 100 - goodPct - medPct;
+  
+  const veryGoodCount = filteredScores.filter(s => s >= 9).length;
+  const goodCount     = filteredScores.filter(s => s >= 7 && s < 9).length;
+  const normalCount   = filteredScores.filter(s => s >= 5 && s < 7).length;
+  const badCount      = filteredScores.filter(s => s >= 3 && s < 5).length;
+  const veryBadCount  = filteredScores.filter(s => s < 3).length;
+
+  const total = filteredScores.length;
+
+  const veryGoodPct = total > 0 ? Math.round((veryGoodCount / total) * 100) : 0;
+  const goodPct     = total > 0 ? Math.round((goodCount / total) * 100) : 0;
+  const normalPct   = total > 0 ? Math.round((normalCount / total) * 100) : 0;
+  const badPct      = total > 0 ? Math.round((badCount / total) * 100) : 0;
+  const veryBadPct  = total > 0 ? 100 - (veryGoodPct + goodPct + normalPct + badPct) : 0;
+
+  // 要約カード用の「調子が良い日」はスコア7以上の合計とする
+  const goodDaysCount = veryGoodCount + goodCount;
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#FAF7F2', display: 'flex', justifyContent: 'center', fontFamily: 'Nunito, sans-serif' }}>
@@ -440,8 +452,14 @@ export default function StatsPage() {
                   次へ
                 </button>
               </div>
-              <StatsDistribution goodPct={goodPct} medPct={medPct} badPct={badPct} />
-            </>
+              <StatsDistribution 
+  veryGoodPct={veryGoodPct}
+  goodPct={goodPct}
+  normalPct={normalPct}
+  badPct={badPct}
+  veryBadPct={veryBadPct}
+/>
+ </>
           )}
         </div>
 

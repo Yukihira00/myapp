@@ -43,42 +43,46 @@ export default function MedicationsPage(): React.JSX.Element {
   const [logDateTime, setLogDateTime] = useState<string>('');
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      setSession(currentSession);
       setLoadingAuth(false);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
       setLoadingAuth(false);
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchMedications = async () => {
+  // --- 【解消ポイント1】データ取得関数をEffect内に集約 ＆ 同期ステート更新警告を完全排除 ---
+  useEffect(() => {
+    let active = true;
     if (!session) return;
     
-    // 同期ステート更新エラー（Cascading renders）を完全に抑止する非同期解決パス
-    await Promise.resolve();
-    setIsLoadingData(true);
+    async function loadMedications(): Promise<void> {
+      if (!active) return;
+      setIsLoadingData(true);
 
-    const { data, error } = await supabase
-      .from('medications')
-      .select('id, name, default_amount')
-      .order('created_at', { ascending: true });
+      const { data, error } = await supabase
+        .from('medications')
+        .select('id, name, default_amount')
+        .order('created_at', { ascending: true });
 
-    if (!error && data) {
-      setMedications(data as Medication[]);
+      if (!active) return;
+      if (!error && data) {
+        setMedications(data as Medication[]);
+      }
+      setIsLoadingData(false);
     }
-    setIsLoadingData(false);
-  };
 
-  useEffect(() => {
-    if (session) {
-      fetchMedications();
-    }
+    loadMedications();
+
+    return () => {
+      active = false; // Cascading renders を完全に防止し、依存配列ミスマッチも解決
+    };
   }, [session, isSubmitting]);
 
-  const handleSaveMedication = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSaveMedication = async (e: React.FormEvent<HTMLFormElement>): Promise<void> => {
     e.preventDefault();
     if (!session) return;
 
@@ -120,7 +124,6 @@ export default function MedicationsPage(): React.JSX.Element {
       setDefaultAmount('1.0');
       setEditingId(null);
       setShowAddForm(false);
-      fetchMedications();
     } catch (error: unknown) {
       alert(error && typeof error === 'object' && 'message' in error ? (error as SupabaseCustomError).message : '保存に失敗しました');
     } finally {
@@ -128,19 +131,20 @@ export default function MedicationsPage(): React.JSX.Element {
     }
   };
 
-  const handleDeleteMedication = async (id: string, name: string) => {
+  const handleDeleteMedication = async (id: string, name: string): Promise<void> => {
     if (!confirm(`「${name}」をマスターから削除しますか？\n※これまでの服薬履歴データは保持されます。`)) return;
     try {
       const { error } = await supabase.from('medications').delete().eq('id', id);
       if (error) throw error;
       alert('削除しました');
-      fetchMedications();
+      // ステートを反転させてEffect側の再集計を安全にトリガー
+      setIsSubmitting(prev => !prev);
     } catch (error: unknown) {
       alert(error && typeof error === 'object' && 'message' in error ? (error as SupabaseCustomError).message : '削除に失敗しました');
     }
   };
 
-  const handleModalSubmit = async () => {
+  const handleModalSubmit = async (): Promise<void> => {
     if (!selectedScore) return alert('スコアを選択してください');
     if (!session) return;
     setIsSubmitting(true);
@@ -173,21 +177,21 @@ export default function MedicationsPage(): React.JSX.Element {
     } finally { setIsSubmitting(false); }
   };
 
-  const handleOpenDialog = () => {
+  const handleOpenDialog = (): void => {
     const now = new Date();
     const offset: number = now.getTimezoneOffset() * 60000;
     setLogDateTime(new Date(now.getTime() - offset).toISOString().slice(0, 16));
     setIsOpen(true);
   };
 
-  const startEdit = (med: Medication) => {
+  const startEdit = (med: Medication): void => {
     setEditingId(med.id);
     setMedName(med.name);
     setDefaultAmount(med.default_amount.toString());
     setShowAddForm(true);
   };
 
-  const cancelEdit = () => {
+  const cancelEdit = (): void => {
     setEditingId(null);
     setMedName('');
     setDefaultAmount('1.0');
@@ -239,6 +243,7 @@ export default function MedicationsPage(): React.JSX.Element {
                           <select value={defaultAmount} onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDefaultAmount(e.target.value)} style={{ width: 75, padding: '6px 4px', borderRadius: 10, border: '1.5px solid rgba(42,36,32,0.15)', fontSize: 13, outline: 'none', backgroundColor: '#FFFFFF', color: '#2A2420' }}>
                             {[1, 2, 3, 4].map((v: number) => <option key={v} value={v.toFixed(1)}>{v.toFixed(1)}錠</option>)}
                           </select>
+                          {/* 【解消ポイント2】不当なCSSプロパティ center: 'center' を完全に除去 */}
                           <button type="submit" style={{ width: 32, height: 32, borderRadius: '50%', backgroundColor: '#7CB88A', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
                           </button>

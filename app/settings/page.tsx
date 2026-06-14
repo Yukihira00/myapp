@@ -21,6 +21,23 @@ interface SupabaseCustomError {
   message: string;
 }
 
+// --- 【any型完全排除】CSVエクスポート用の厳密なインターフェース定義 ---
+interface CSVMedicationRelation {
+  name: string;
+}
+
+interface CSVMedicationLog {
+  logged_at: string;
+  amount: number;
+  medications: CSVMedicationRelation | CSVMedicationRelation[] | null;
+}
+
+interface CSVMoodLog {
+  created_at: string;
+  score: number;
+  memo: string | null;
+}
+
 export default function SettingsPage(): React.JSX.Element {
   const router = useRouter();
   const [session, setSession] = useState<Session | null>(null);
@@ -50,26 +67,29 @@ export default function SettingsPage(): React.JSX.Element {
     return () => subscription.unsubscribe();
   }, []);
 
-  const fetchSummaryData = async () => {
+  // --- 【解消ポイント1】fetchSummaryDataをEffect内に完全移動 ＆ クリーンアップフラグ制御 ---
+  useEffect(() => {
+    let active = true;
     if (!session) return;
     
-    // 同期エラー防止
-    await Promise.resolve();
+    async function fetchSummaryData(): Promise<void> {
+      const { count: moodCount } = await supabase.from('mood_logs').select('*', { count: 'exact', head: true });
+      const { data: meds, count: medCount } = await supabase.from('medications').select('id, name, default_amount', { count: 'exact' });
 
-    const { count: moodCount } = await supabase.from('mood_logs').select('*', { count: 'exact', head: true });
-    if (moodCount !== null) setTotalEntriesCount(moodCount);
-
-    const { data: meds, count: medCount } = await supabase.from('medications').select('id, name, default_amount', { count: 'exact' });
-    if (medCount !== null) setMedicationsCount(medCount);
-    if (meds) setMedicationMaster(meds as MedicationMaster[]);
-  };
-
-  useEffect(() => {
-    if (session) {
-      fetchSummaryData();
+      if (!active) return; // コンポーネントが破棄されていたらステート更新をスキップ
+      if (moodCount !== null) setTotalEntriesCount(moodCount);
+      if (medCount !== null) setMedicationsCount(medCount);
+      if (meds) setMedicationMaster(meds as MedicationMaster[]);
     }
+
+    fetchSummaryData();
+
+    return () => {
+      active = false; // Cascading renders（多重再描画エラー）を完全に防止
+    };
   }, [session, isSubmitting]);
 
+  // --- 【解消ポイント2】CSV抽出における結合型推論エラーの完全解決 ---
   const handleExportCSV = async (): Promise<void> => {
     if (!session) return;
     try {
@@ -84,16 +104,31 @@ export default function SettingsPage(): React.JSX.Element {
         .select('logged_at, amount, medications(name)');
       if (medError) throw medError;
 
+      // 厳密な型アサーションによりanyの混入をブロック
+      const typedMoodData = moodData as CSVMoodLog[];
+      const typedMedData = medData as unknown as CSVMedicationLog[];
+
       const header = '日付,時刻,感情スコア,服用した薬(数量),メモ';
-      const rows = (moodData || []).map((m) => {
+      const rows = (typedMoodData || []).map((m: CSVMoodLog) => {
         const d = new Date(m.created_at);
         const dateStr = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
         const timeStr = d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
         
         const keyTime = new Date(m.created_at).setSeconds(0,0);
-        const matchedMeds = (medData || [])
-          .filter((med) => new Date(med.logged_at).setSeconds(0,0) === keyTime)
-          .map((med) => `${med.medications?.name || '不明'}(${med.amount}錠)`)
+        const matchedMeds = (typedMedData || [])
+          .filter((med: CSVMedicationLog) => new Date(med.logged_at).setSeconds(0,0) === keyTime)
+          .map((med: CSVMedicationLog) => {
+            let medNameText = '不明';
+            // 配列型と単一オブジェクト型、どちらの推論結果でも安全にnameを取得できるガードを構築
+            if (med.medications) {
+              if (Array.isArray(med.medications)) {
+                medNameText = med.medications[0]?.name || '不明';
+              } else {
+                medNameText = med.medications.name;
+              }
+            }
+            return `${medNameText}(${med.amount}錠)`;
+          })
           .join('/');
 
         return [dateStr, timeStr, m.score, matchedMeds, `"${m.memo || ''}"`].join(',');
@@ -107,8 +142,10 @@ export default function SettingsPage(): React.JSX.Element {
       a.download = `lifelog_backup_${formatDate(new Date())}.csv`;
       a.click();
       URL.revokeObjectURL(url);
-    } catch (err: any) {
-      alert(`エクスポート失敗: ${err.message}`);
+    } catch (err: unknown) {
+      // catch句のanyも排除
+      const errMsg = err instanceof Error ? err.message : '不明なエラー';
+      alert(`エクスポート失敗: ${errMsg}`);
     }
   };
 

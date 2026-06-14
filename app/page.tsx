@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { formatDate } from '@/lib/utils';
@@ -76,33 +76,34 @@ const getInitialDateTimeString = (selectedDateStr: string): string => {
   }
 };
 
-export default function Home() {
+export default function Home(): React.JSX.Element {
   const router = useRouter();
 
   const [session, setSession] = useState<Session | null>(null);
-  const [authEmail, setAuthEmail] = useState('');
-  const [authName, setAuthName] = useState('');
-  const [authPassword, setAuthPassword] = useState('');
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [authLoading, setAuthLoading] = useState(false);
+  const [authEmail, setAuthEmail] = useState<string>('');
+  const [authName, setAuthName] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [isSignUp, setIsSignUp] = useState<boolean>(false);
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
 
-  const [currentYear, setCurrentYear] = useState(2026);
-  const [currentMonth, setCurrentMonth] = useState(6);
-  const [selectedDateStr, setSelectedDateStr] = useState(formatDate(new Date()));
+  const [currentYear, setCurrentYear] = useState<number>(2026);
+  const [currentMonth, setCurrentMonth] = useState<number>(6);
+  const [selectedDateStr, setSelectedDateStr] = useState<string>(formatDate(new Date()));
   const [dailyAverages, setDailyAverages] = useState<Record<string, number>>({});
   const [timelineLogs, setTimelineLogs] = useState<TimelineLog[]>([]);
   const [medicationMaster, setMedicationMaster] = useState<MedicationMaster[]>([]);
 
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState<boolean>(false);
   const [selectedScore, setSelectedScore] = useState<number | null>(null);
-  const [memo, setMemo] = useState('');
+  const [memo, setMemo] = useState<string>('');
   const [selectedMedIds, setSelectedMedIds] = useState<string[]>([]);
-  const [logDateTime, setLogDateTime] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [logDateTime, setLogDateTime] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => setSession(session));
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => setSession(currentSession));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {            setSession(currentSession);
+    });
     return () => subscription.unsubscribe();
   }, []);
 
@@ -189,16 +190,6 @@ export default function Home() {
     } finally { setAuthLoading(false); }
   };
 
-  const handleSignOut = async () => {
-    if (!confirm('ログアウトしますか？')) return;
-    try {
-      await supabase.auth.signOut();
-      setSession(null); setTimelineLogs([]); setDailyAverages({});
-      localStorage.clear(); sessionStorage.clear();
-      window.location.assign(window.location.origin);
-    } catch (error: unknown) { console.error((error as SupabaseCustomError).message); }
-  };
-
   const handleSubmit = async () => {
     if (!selectedScore) return alert('スコアを選択してください');
     if (!session) return;
@@ -282,7 +273,7 @@ export default function Home() {
     <div style={{ minHeight: '100vh', backgroundColor: '#FAF7F2', display: 'flex', justifyContent: 'center', fontFamily: 'Nunito, sans-serif' }}>
       <div style={{ position: 'relative', width: '100%', maxWidth: 420, height: '100vh', backgroundColor: '#FAF7F2', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         
-        <Header onSignOut={handleSignOut} />
+        <Header />
 
         <div className="overflow-y-auto flex-1 pb-4" style={{ scrollbarWidth: 'none', overflowY: 'auto' }}>
           

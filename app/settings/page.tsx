@@ -21,7 +21,6 @@ interface SupabaseCustomError {
   message: string;
 }
 
-// --- 【any型完全排除】CSVエクスポート用の厳密なインターフェース定義 ---
 interface CSVMedicationRelation {
   name: string;
 }
@@ -47,6 +46,7 @@ export default function SettingsPage(): React.JSX.Element {
   const [medicationsCount, setMedicationsCount] = useState<number>(0);
   const [medicationMaster, setMedicationMaster] = useState<MedicationMaster[]>([]);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [refreshTrigger, setRefreshTrigger] = useState<boolean>(false);
 
   // 画面共通FABモーダル用ステート
   const [isOpen, setIsOpen] = useState<boolean>(false);
@@ -56,18 +56,18 @@ export default function SettingsPage(): React.JSX.Element {
   const [logDateTime, setLogDateTime] = useState<string>('');
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      setSession(currentSession);
       setLoadingAuth(false);
     });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, currentSession) => {
+      setSession(currentSession);
       setLoadingAuth(false);
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  // --- 【解消ポイント1】fetchSummaryDataをEffect内に完全移動 ＆ クリーンアップフラグ制御 ---
+  // データの自動取得・手動キャッシュクリア連動Effect（Cascading renders対策）
   useEffect(() => {
     let active = true;
     if (!session) return;
@@ -76,7 +76,7 @@ export default function SettingsPage(): React.JSX.Element {
       const { count: moodCount } = await supabase.from('mood_logs').select('*', { count: 'exact', head: true });
       const { data: meds, count: medCount } = await supabase.from('medications').select('id, name, default_amount', { count: 'exact' });
 
-      if (!active) return; // コンポーネントが破棄されていたらステート更新をスキップ
+      if (!active) return;
       if (moodCount !== null) setTotalEntriesCount(moodCount);
       if (medCount !== null) setMedicationsCount(medCount);
       if (meds) setMedicationMaster(meds as MedicationMaster[]);
@@ -85,11 +85,69 @@ export default function SettingsPage(): React.JSX.Element {
     fetchSummaryData();
 
     return () => {
-      active = false; // Cascading renders（多重再描画エラー）を完全に防止
+      active = false;
     };
-  }, [session, isSubmitting]);
+  }, [session, isSubmitting, refreshTrigger]);
 
-  // --- 【解消ポイント2】CSV抽出における結合型推論エラーの完全解決 ---
+  // 離脱（ログアウト）処理
+  const handleSignOut = async (): Promise<void> => {
+    if (!confirm('ログアウト（アカウントの離脱）をしますか？\n次回利用時は再度ログインが必要です。')) return;
+    try {
+      await supabase.auth.signOut();
+      setSession(null);
+      localStorage.clear();
+      sessionStorage.clear();
+      window.location.assign(window.location.origin);
+    } catch (error: unknown) {
+      console.error(error);
+    }
+  };
+
+  // 【新設機能】トリプルガード仕様：ライフログデータの全削除処理
+  const handleDeleteAllLogs = async (): Promise<void> => {
+    if (!session) return;
+    const currentUserId: string = session.user.id;
+
+    // ガード1
+    if (!confirm('【警告】これまでに記録したすべての感情ライフログおよび服薬履歴を完全に削除しますか？\nこの操作は取り消すことができません。')) return;
+    
+    // ガード2
+    if (!confirm('本当によろしいですか？\n削除すると、統計グラフやカレンダーの履歴ドットもすべて初期化されます。（※登録したお薬マスターは保持されます）')) return;
+
+    // ガード3：誤操作を100%防ぐテキスト認証
+    const userInput: string | null = prompt('最終確認です。データを完全に消去する場合は、半角で「DELETE」と入力してください。');
+    if (userInput !== 'DELETE') {
+      alert('入力内容が一致しないため、削除処理を安全に中止しました。');
+      return;
+    }
+
+    try {
+      setIsSubmitting(true);
+
+      // 服薬履歴の削除
+      const { error: medLogError } = await supabase
+        .from('medication_logs')
+        .delete()
+        .eq('user_id', currentUserId);
+      if (medLogError) throw medLogError;
+
+      // 感情ログの削除
+      const { error: moodLogError } = await supabase
+        .from('mood_logs')
+        .delete()
+        .eq('user_id', currentUserId);
+      if (moodLogError) throw moodLogError;
+
+      alert('すべてのライフログ履歴データをデータベースから完全に消去しました。');
+      setRefreshTrigger(prev => !prev);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : '削除に失敗しました';
+      alert(`削除エラー: ${errMsg}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleExportCSV = async (): Promise<void> => {
     if (!session) return;
     try {
@@ -104,7 +162,6 @@ export default function SettingsPage(): React.JSX.Element {
         .select('logged_at, amount, medications(name)');
       if (medError) throw medError;
 
-      // 厳密な型アサーションによりanyの混入をブロック
       const typedMoodData = moodData as CSVMoodLog[];
       const typedMedData = medData as unknown as CSVMedicationLog[];
 
@@ -119,7 +176,6 @@ export default function SettingsPage(): React.JSX.Element {
           .filter((med: CSVMedicationLog) => new Date(med.logged_at).setSeconds(0,0) === keyTime)
           .map((med: CSVMedicationLog) => {
             let medNameText = '不明';
-            // 配列型と単一オブジェクト型、どちらの推論結果でも安全にnameを取得できるガードを構築
             if (med.medications) {
               if (Array.isArray(med.medications)) {
                 medNameText = med.medications[0]?.name || '不明';
@@ -143,7 +199,6 @@ export default function SettingsPage(): React.JSX.Element {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err: unknown) {
-      // catch句のanyも排除
       const errMsg = err instanceof Error ? err.message : '不明なエラー';
       alert(`エクスポート失敗: ${errMsg}`);
     }
@@ -210,26 +265,60 @@ export default function SettingsPage(): React.JSX.Element {
 
         <div className="overflow-y-auto flex-1 pb-4" style={{ scrollbarWidth: 'none', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, padding: '0 16px' }}>
           
-          <div style={{ backgroundColor: '#FFFFFF', borderRadius: 24, padding: '20px', display: 'flex', alignItems: 'center', gap: 16, border: '1px solid rgba(42,36,32,0.05)', marginTop: 4 }}>
+          {/* プロフィールカード */}
+          <div style={{ backgroundColor: '#FFFFFF', borderRadius: 24, padding: '20px', display: 'flex', alignItems: 'center', gap: 16, border: '1px solid rgba(42,36,32,0.05)', marginTop: 4, position: 'relative' }}>
             <div style={{ width: 56, height: 56, borderRadius: '50%', backgroundColor: '#D8ECA0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#7CB88A" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             </div>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#2A2420' }}>ユーザーアカウント</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: '#2A2420', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {session.user.email}
+              </div>
               <div style={{ fontSize: 13, color: '#8A8278', marginTop: 2, fontWeight: 600 }}>
                 記録: {totalEntriesCount}件 ／ 薬: {medicationsCount}種
               </div>
             </div>
+            
+            {/* 手動データ更新ボタン */}
+            <button 
+              onClick={() => setRefreshTrigger(prev => !prev)}
+              title="データを再読み込み"
+              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7CB88A" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+            </button>
           </div>
 
-          <div style={{ marginTop: 8 }}>
+          {/* メニューセクション */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 8 }}>
+            
+            {/* CSVエクスポートボタン */}
             <button
               onClick={handleExportCSV}
-              style={{ width: '100%', padding: '14px', borderRadius: 18, border: '1.5px solid rgba(42,36,32,0.12)', backgroundColor: '#FFFFFF', color: '#8A8278', fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+              style={{ width: '100%', padding: '14px 20px', borderRadius: 18, border: '1px solid rgba(42,36,32,0.04)', backgroundColor: '#FFFFFF', color: '#5A5450', fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.01)' }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8A8278" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               全データをCSVで書き出す
             </button>
+
+            {/* 新設：全ログデータ削除ボタン（危険色） */}
+            <button
+              onClick={handleDeleteAllLogs}
+              style={{ width: '100%', padding: '14px 20px', borderRadius: 18, border: '1px solid rgba(224,112,112,0.15)', backgroundColor: '#FDF2F2', color: '#E07070', fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.01)' }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#E07070" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+              全記録履歴の完全消去
+            </button>
+
+            {/* 集約：ログアウトボタン（離脱） */}
+            <button
+              onClick={handleSignOut}
+              style={{ width: '100%', padding: '14px 20px', borderRadius: 18, border: '1px solid rgba(42,36,32,0.04)', backgroundColor: '#EDE8E0', color: '#6B6060', fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.01)' }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6B6060" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              アカウントから離脱（ログアウト）
+            </button>
+
           </div>
 
         </div>

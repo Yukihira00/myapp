@@ -34,13 +34,159 @@ interface SupabaseCustomError {
   message: string;
 }
 
-// SCORE_COLORS and getScoreColor are provided by other pages/components when needed
+const DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
 
 const getInitialDateTimeString = (): string => {
   const now = new Date();
   const offset = now.getTimezoneOffset() * 60000;
   return new Date(now.getTime() - offset).toISOString().slice(0, 16);
 };
+
+function formatLocalIso(date: Date, includeTime = true): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return includeTime ? `${yyyy}-${mm}-${dd}T${hh}:${min}:${ss}+09:00` : `${yyyy}-${mm}-${dd}`;
+}
+
+function alignSegmentStart(date: Date, mode: RangeMode): Date {
+  const aligned = new Date(date);
+  aligned.setSeconds(0);
+  aligned.setMilliseconds(0);
+
+  if (mode === 'day') {
+    const hour = aligned.getHours();
+    aligned.setHours(hour < 12 ? 0 : 12, 0, 0, 0);
+    return aligned;
+  }
+
+  if (mode === 'week') {
+    aligned.setHours(0, 0, 0, 0);
+    aligned.setDate(aligned.getDate() - aligned.getDay());
+    return aligned;
+  }
+
+  if (mode === 'month') {
+    aligned.setHours(0, 0, 0, 0);
+    aligned.setDate(1);
+    return aligned;
+  }
+
+  aligned.setHours(0, 0, 0, 0);
+  aligned.setMonth(0, 1);
+  return aligned;
+}
+
+function shiftSegmentStart(date: Date, mode: RangeMode, delta: number): Date {
+  const next = new Date(date);
+  if (mode === 'day') {
+    next.setHours(next.getHours() + delta * 12);
+    return next;
+  }
+  if (mode === 'week') {
+    next.setDate(next.getDate() + delta * 7);
+    return next;
+  }
+  if (mode === 'month') {
+    next.setMonth(next.getMonth() + delta);
+    return next;
+  }
+  next.setFullYear(next.getFullYear() + delta);
+  return next;
+}
+
+function clampSegmentStart(date: Date, mode: RangeMode): Date {
+  const latest = alignSegmentStart(new Date(), mode);
+  const earliest = new Date(latest);
+  if (mode === 'day') {
+    earliest.setDate(earliest.getDate() - 365);
+  } else {
+    earliest.setFullYear(earliest.getFullYear() - 1);
+  }
+  if (date < earliest) return earliest;
+  if (date > latest) return latest;
+  return date;
+}
+
+function getBucketKey(date: Date, mode: RangeMode): string {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  const hh = String(date.getHours()).padStart(2, '0');
+  if (mode === 'day') return `${yyyy}-${mm}-${dd}T${hh}:00:00`;
+  if (mode === 'year') return `${yyyy}-${mm}`;
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getRangeText(mode: RangeMode, startDate: Date): string {
+  if (mode === 'day') {
+    const label = startDate.getHours() < 12 ? '午前' : '午後';
+    return `${startDate.getFullYear()}年${startDate.getMonth() + 1}月${startDate.getDate()}日 ${label}`;
+  }
+  if (mode === 'week') {
+    const end = new Date(startDate);
+    end.setDate(end.getDate() + 6);
+    return `${formatLocalIso(startDate, false).replace(/-/g, '/')}〜${formatLocalIso(end, false).replace(/-/g, '/')}`;
+  }
+  if (mode === 'month') {
+    return `${startDate.getFullYear()}年${startDate.getMonth() + 1}月`;
+  }
+  return `${startDate.getFullYear()}年`;
+}
+
+function buildEmptyBuckets(mode: RangeMode, startDate: Date): StatDataPoint[] {
+  if (mode === 'day') {
+    return Array.from({ length: 12 }).map((_, idx) => {
+      const bucketDate = new Date(startDate);
+      bucketDate.setHours(startDate.getHours() + idx, 0, 0, 0);
+      const label = `${bucketDate.getHours()}時`;
+      return {
+        dateStr: getBucketKey(bucketDate, 'day'),
+        displayLabel: label,
+        avgScore: null,
+        medCount: 0,
+      };
+    });
+  }
+  if (mode === 'week') {
+    return Array.from({ length: 7 }).map((_, idx) => {
+      const bucketDate = new Date(startDate);
+      bucketDate.setDate(startDate.getDate() + idx);
+      return {
+        dateStr: getBucketKey(bucketDate, 'week'),
+        displayLabel: DAY_LABELS[bucketDate.getDay()],
+        avgScore: null,
+        medCount: 0,
+      };
+    });
+  }
+  if (mode === 'month') {
+    const year = startDate.getFullYear();
+    const month = startDate.getMonth();
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    return Array.from({ length: lastDay }).map((_, idx) => {
+      const bucketDate = new Date(year, month, idx + 1, 0, 0, 0, 0);
+      return {
+        dateStr: getBucketKey(bucketDate, 'month'),
+        displayLabel: `${idx + 1}`,
+        avgScore: null,
+        medCount: 0,
+      };
+    });
+  }
+  return Array.from({ length: 12 }).map((_, idx) => {
+    const bucketDate = new Date(startDate.getFullYear(), idx, 1, 0, 0, 0, 0);
+    return {
+      dateStr: getBucketKey(bucketDate, 'year'),
+      displayLabel: `${bucketDate.getMonth() + 1}月`,
+      avgScore: null,
+      medCount: 0,
+    };
+  });
+}
 
 export default function StatsPage() {
   const router = useRouter();
@@ -82,108 +228,82 @@ export default function StatsPage() {
     fetchMedications();
   }, [session]);
 
-  const generateDateRangeBuckets = (days: number): StatDataPoint[] => {
-    const buckets: StatDataPoint[] = [];
-    const now = new Date();
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      const mm = String(d.getMonth() + 1).padStart(2, '0');
-      const dd = String(d.getDate()).padStart(2, '0');
-      buckets.push({
-        dateStr: `${d.getFullYear()}-${mm}-${dd}`,
-        displayLabel: `${d.getMonth() + 1}/${dd}`,
-        avgScore: null,
-        medCount: 0,
-      });
-    }
-    return buckets;
+  const [currentSegmentStart, setCurrentSegmentStart] = useState<Date>(() => alignSegmentStart(new Date(), 'month'));
+
+  const handleNavigateSegment = (delta: number) => {
+    setCurrentSegmentStart((prev) => clampSegmentStart(shiftSegmentStart(prev, rangeMode, delta), rangeMode));
   };
 
   useEffect(() => {
     if (!session) return;
 
-    async function fetchAndAggregateStats() {
+    async function fetchSegmentStats() {
+      const currentSession = session;
+      if (!currentSession) return;
+
       setIsLoadingData(true);
-      const now = new Date();
-      let computedStats: StatDataPoint[] = [];
-      let startIso = '';
-      let rangeText = '';
+      const mode = rangeMode;
+      const startDate = currentSegmentStart;
+      const endDate = new Date(startDate);
+
+      if (mode === 'day') {
+        endDate.setHours(endDate.getHours() + 11, 59, 59, 999);
+      } else if (mode === 'week') {
+        endDate.setDate(endDate.getDate() + 6);
+        endDate.setHours(23, 59, 59, 999);
+      } else if (mode === 'month') {
+        endDate.setMonth(endDate.getMonth() + 1, 0);
+        endDate.setHours(23, 59, 59, 999);
+      } else {
+        endDate.setFullYear(endDate.getFullYear() + 1, 0, 0);
+        endDate.setHours(23, 59, 59, 999);
+      }
+
+      const startIso = formatLocalIso(startDate, true);
+      const endIso = formatLocalIso(endDate, true);
+      const rangeText = getRangeText(mode, startDate);
 
       try {
-        if (rangeMode === 'day') {
-          const yyyy = now.getFullYear();
-          const mm = String(now.getMonth() + 1).padStart(2, '0');
-          const dd = String(now.getDate()).padStart(2, '0');
-          const todayStr = `${yyyy}-${mm}-${dd}`;
-          startIso = `${todayStr}T00:00:00+09:00`;
-          const endIso = `${todayStr}T23:59:59+09:00`;
-          rangeText = `表示範囲: ${yyyy}年${mm}月${dd}日 (今日)`;
+        const userId = currentSession.user.id;
 
-          const { data: moodData } = await supabase.from('mood_logs').select('created_at, score').gte('created_at', startIso).lte('created_at', endIso);
-          const { data: medData } = await supabase.from('medication_logs').select('logged_at').gte('logged_at', startIso).lte('logged_at', endIso);
+        const { data: moodData } = await supabase
+          .from('mood_logs')
+          .select('created_at, score')
+          .eq('user_id', userId)
+          .gte('created_at', startIso)
+          .lte('created_at', endIso);
 
-          for (let h = 0; h < 24; h++) {
-            const label = `${String(h).padStart(2, '0')}:00`;
-            const hourMoods = (moodData || []).filter(m => new Date(m.created_at).getHours() === h);
-            const hourMedsCount = (medData || []).filter(m => new Date(m.logged_at).getHours() === h).length;
+        const { data: medData } = await supabase
+          .from('medication_logs')
+          .select('logged_at')
+          .eq('user_id', userId)
+          .gte('logged_at', startIso)
+          .lte('logged_at', endIso);
 
-            let avgScore: number | null = null;
-            if (hourMoods.length > 0) {
-              avgScore = Math.round((hourMoods.reduce((acc, cur) => acc + cur.score, 0) / hourMoods.length) * 10) / 10;
-            }
-            computedStats.push({ dateStr: `${todayStr} ${label}`, displayLabel: label, avgScore, medCount: hourMedsCount });
-          }
+        const buckets = buildEmptyBuckets(mode, startDate);
+        const moodSummary = new Map<string, { sum: number; count: number }>();
+        const medSummary = new Map<string, number>();
 
-        } else if (rangeMode === 'week' || rangeMode === 'month') {
-          const totalDays = rangeMode === 'week' ? 7 : 30;
-          const dateBuckets = generateDateRangeBuckets(totalDays);
-          startIso = `${dateBuckets[0].dateStr}T00:00:00+09:00`;
-          rangeText = `表示範囲: ${dateBuckets[0].dateStr.replace(/-/g, '/')} 〜 ${dateBuckets[dateBuckets.length - 1].dateStr.replace(/-/g, '/')}`;
+        (moodData || []).forEach((record) => {
+          if (!record?.created_at || typeof record.score !== 'number') return;
+          const recordKey = getBucketKey(new Date(record.created_at), mode);
+          const current = moodSummary.get(recordKey) ?? { sum: 0, count: 0 };
+          current.sum += record.score;
+          current.count += 1;
+          moodSummary.set(recordKey, current);
+        });
 
-          const { data: moodData } = await supabase.from('mood_logs').select('created_at, score').gte('created_at', startIso);
-          const { data: medData } = await supabase.from('medication_logs').select('logged_at').gte('logged_at', startIso);
+        (medData || []).forEach((record) => {
+          if (!record?.logged_at) return;
+          const recordKey = getBucketKey(new Date(record.logged_at), mode);
+          medSummary.set(recordKey, (medSummary.get(recordKey) ?? 0) + 1);
+        });
 
-          computedStats = dateBuckets.map((bucket) => {
-            const dayMoods = (moodData || []).filter(m => {
-              const d = new Date(m.created_at);
-              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` === bucket.dateStr;
-            });
-            const dayMedsCount = (medData || []).filter(m => {
-              const d = new Date(m.logged_at);
-              return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` === bucket.dateStr;
-            }).length;
-
-            let avgScore: number | null = null;
-            if (dayMoods.length > 0) {
-              avgScore = Math.round((dayMoods.reduce((acc, cur) => acc + cur.score, 0) / dayMoods.length) * 10) / 10;
-            }
-            return { ...bucket, avgScore, medCount: dayMedsCount };
-          });
-
-        } else if (rangeMode === 'year') {
-          const buckets: StatDataPoint[] = [];
-          for (let i = 11; i >= 0; i--) {
-            const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-            buckets.push({ dateStr: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, displayLabel: `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}`, avgScore: null, medCount: 0 });
-          }
-          startIso = `${buckets[0].dateStr}-01T00:00:00+09:00`;
-          rangeText = `表示範囲: ${buckets[0].displayLabel} 〜 ${buckets[buckets.length - 1].displayLabel}`;
-
-          const { data: moodData } = await supabase.from('mood_logs').select('created_at, score').gte('created_at', startIso);
-          const { data: medData } = await supabase.from('medication_logs').select('logged_at').gte('logged_at', startIso);
-
-          computedStats = buckets.map((bucket) => {
-            const monthMoods = (moodData || []).filter(m => `${new Date(m.created_at).getFullYear()}-${String(new Date(m.created_at).getMonth() + 1).padStart(2, '0')}` === bucket.dateStr);
-            const monthMedsCount = (medData || []).filter(m => `${new Date(m.logged_at).getFullYear()}-${String(new Date(m.logged_at).getMonth() + 1).padStart(2, '0')}` === bucket.dateStr).length;
-
-            let avgScore: number | null = null;
-            if (monthMoods.length > 0) {
-              avgScore = Math.round((monthMoods.reduce((acc, cur) => acc + cur.score, 0) / monthMoods.length) * 10) / 10;
-            }
-            return { ...bucket, avgScore, medCount: monthMedsCount };
-          });
-        }
-
+        const computedStats = buckets.map((bucket) => {
+          const mood = moodSummary.get(bucket.dateStr);
+          const avgScore = mood ? Math.round((mood.sum / mood.count) * 10) / 10 : null;
+          return { ...bucket, avgScore, medCount: medSummary.get(bucket.dateStr) ?? 0 };
+        });
         setStatsData(computedStats);
         setDisplayRangeText(rangeText);
       } catch (error: unknown) {
@@ -193,8 +313,8 @@ export default function StatsPage() {
       }
     }
 
-    fetchAndAggregateStats();
-  }, [rangeMode, session, isSubmitting]);
+    fetchSegmentStats();
+  }, [rangeMode, currentSegmentStart, session, isSubmitting]);
 
   const handleSubmit = async () => {
     if (!selectedScore) return alert('スコアを選択してください');
@@ -277,7 +397,10 @@ export default function StatsPage() {
                 return (
                   <button
                     key={mode}
-                    onClick={() => setRangeMode(mode)}
+                    onClick={() => {
+                      setRangeMode(mode);
+                      setCurrentSegmentStart(alignSegmentStart(new Date(), mode));
+                    }}
                     style={{ flex: 1, padding: '8px 0', borderRadius: 999, border: 'none', cursor: 'pointer', transition: 'all 0.2s', fontWeight: 700, fontSize: 13,
                       backgroundColor: rangeMode === mode ? '#7CB88A' : 'transparent',
                       color: rangeMode === mode ? '#FFFFFF' : '#6B6060' }}
@@ -301,6 +424,22 @@ export default function StatsPage() {
             <>
               <StatsSummaryCard avgAll={avgAll} totalEntries={filteredScores.length} goodDaysCount={goodDaysCount} />
               <StatsLineChart statsData={statsData} rangeMode={rangeMode} />
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 8, marginTop: 12, marginBottom: 8 }}>
+                <button
+                  type="button"
+                  onClick={() => handleNavigateSegment(-1)}
+                  style={{ padding: '8px 14px', borderRadius: 999, border: '1px solid #D9D3CA', backgroundColor: '#FFFFFF', color: '#2A2420', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  前へ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleNavigateSegment(1)}
+                  style={{ padding: '8px 14px', borderRadius: 999, border: '1px solid #D9D3CA', backgroundColor: '#FFFFFF', color: '#2A2420', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  次へ
+                </button>
+              </div>
               <StatsDistribution goodPct={goodPct} medPct={medPct} badPct={badPct} />
             </>
           )}

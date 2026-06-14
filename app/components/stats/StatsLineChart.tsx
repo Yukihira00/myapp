@@ -9,15 +9,9 @@ interface StatDataPoint {
   medCount: number;
 }
 
-interface ScoreColor {
-  bg: string;
-  text: string;
-}
-
 interface StatsLineChartProps {
   statsData: StatDataPoint[];
   rangeMode: 'day' | 'week' | 'month' | 'year';
-  getScoreColor: (score: number) => ScoreColor;
 }
 
 interface TouchPositionState {
@@ -32,7 +26,7 @@ interface MappedCoordinatePoint {
   data: StatDataPoint;
 }
 
-export function StatsLineChart({ statsData, rangeMode, getScoreColor }: StatsLineChartProps): React.JSX.Element | null {
+export function StatsLineChart({ statsData, rangeMode }: StatsLineChartProps): React.JSX.Element | null {
   const containerRef = useRef<HTMLDivElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   

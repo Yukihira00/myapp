@@ -38,14 +38,7 @@ export default function MedicationsPage(): React.JSX.Element {
   const [iconType, setIconType] = useState<'tablet' | 'capsule'>('tablet');
   const [isSaving, setIsSaving] = useState(false);
 
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
-      setSession(currentSession);
-      if (currentSession) fetchMedications(currentSession.user.id);
-    });
-  }, []);
-
-  const fetchMedications = async (userId: string) => {
+  async function fetchMedications(userId: string) {
     setIsLoading(true);
     try {
       const { data, error } = await supabase
@@ -56,12 +49,20 @@ export default function MedicationsPage(): React.JSX.Element {
       
       if (error) throw error;
       if (data) setMedications(data);
-    } catch (error: any) {
-      console.error('薬データの取得に失敗しました:', error.message);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('薬データの取得に失敗しました:', message);
     } finally {
       setIsLoading(false);
     }
-  };
+  }
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      setSession(currentSession);
+      if (currentSession) fetchMedications(currentSession.user.id);
+    });
+  }, []);
 
   const openModal = (mode: 'add' | 'edit', med?: Medication) => {
     setModalMode(mode);
@@ -110,8 +111,9 @@ export default function MedicationsPage(): React.JSX.Element {
 
       await fetchMedications(session.user.id);
       closeModal();
-    } catch (error: any) {
-      alert(`保存に失敗しました: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`保存に失敗しました: ${message}`);
     } finally {
       setIsSaving(false);
     }
@@ -127,8 +129,9 @@ export default function MedicationsPage(): React.JSX.Element {
       
       await fetchMedications(session.user.id);
       closeModal();
-    } catch (error: any) {
-      alert(`削除に失敗しました: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`削除に失敗しました: ${message}`);
     }
   };
 

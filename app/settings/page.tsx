@@ -109,8 +109,9 @@ export default function Settings(): React.JSX.Element {
       setSavedDisplayName(displayName);
       setIsEditing(false);
       alert('プロフィールを更新しました');
-    } catch (error: any) { 
-      alert(`更新失敗: ${error.message}`); 
+    } catch (error: unknown) { 
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`更新失敗: ${message}`);
     } finally { 
       setIsUpdatingProfile(false); 
     }
@@ -143,8 +144,9 @@ export default function Settings(): React.JSX.Element {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-    } catch (error: any) {
-      alert(`エクスポート失敗: ${error.message}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      alert(`エクスポート失敗: ${message}`);
     }
   };
 
@@ -159,8 +161,9 @@ export default function Settings(): React.JSX.Element {
 
         alert('すべてのデータを初期化しました。');
         setTotalMoodLogs(0); setTotalMedicationLogs(0);
-      } catch (error: any) {
-        alert(`初期化失敗: ${error.message}`);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        alert(`初期化失敗: ${message}`);
       }
     }
   };
@@ -191,8 +194,9 @@ export default function Settings(): React.JSX.Element {
           await supabase.auth.signOut();
           alert('退会処理が完了し、すべてのデータが削除されました。\nご利用ありがとうございました。');
           router.push('/');
-        } catch (error: any) {
-          alert(`退会処理に失敗しました: ${error.message}`);
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          alert(`退会処理に失敗しました: ${message}`);
         }
       }
     }

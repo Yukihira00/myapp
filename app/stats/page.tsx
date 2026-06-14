@@ -30,29 +30,11 @@ interface MedicationMaster {
   default_amount: number;
 }
 
-interface DBResponseMood {
-  created_at: string;
-  score: number;
-}
-
-interface DBResponseMed {
-  logged_at: string;
-}
-
 interface SupabaseCustomError {
   message: string;
 }
 
-const SCORE_COLORS = [
-  { bg: '#1A1A1A', text: '#FFFFFF' }, { bg: '#2E2E2E', text: '#FFFFFF' },
-  { bg: '#484848', text: '#FFFFFF' }, { bg: '#6B5840', text: '#FFFFFF' },
-  { bg: '#9B8464', text: '#FFFFFF' }, { bg: '#B8A882', text: '#2A2A2A' },
-  { bg: '#C8D878', text: '#2A2A2A' }, { bg: '#D8EC96', text: '#2A2A2A' },
-  { bg: '#E8F5B0', text: '#2A2A2A' }, { bg: '#F5FAD0', text: '#2A2A2A' },
-];
-
-const getScoreColor = (score: number) =>
-  SCORE_COLORS[Math.min(Math.max(Math.round(score), 1), 10) - 1];
+// SCORE_COLORS and getScoreColor are provided by other pages/components when needed
 
 const getInitialDateTimeString = (): string => {
   const now = new Date();
@@ -273,7 +255,6 @@ export default function StatsPage() {
   const avgAll = filteredScores.length ? filteredScores.reduce((a, b) => a + b, 0) / filteredScores.length : 0;
   const goodDaysCount = filteredScores.filter(s => s >= 7).length;
   const medium = filteredScores.filter(s => s >= 4 && s < 7).length;
-  const bad = filteredScores.filter(s => s < 4).length;
   const total = filteredScores.length || 1;
   const goodPct = Math.round((goodDaysCount / total) * 100);
   const medPct = Math.round((medium / total) * 100);
@@ -319,7 +300,7 @@ export default function StatsPage() {
           ) : (
             <>
               <StatsSummaryCard avgAll={avgAll} totalEntries={filteredScores.length} goodDaysCount={goodDaysCount} />
-              <StatsLineChart statsData={statsData} rangeMode={rangeMode} getScoreColor={getScoreColor} />
+              <StatsLineChart statsData={statsData} rangeMode={rangeMode} />
               <StatsDistribution goodPct={goodPct} medPct={medPct} badPct={badPct} />
             </>
           )}

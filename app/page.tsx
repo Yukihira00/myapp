@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { generateCalendarDays, formatDate } from '@/lib/utils';
 import { Session } from '@supabase/supabase-js';
+import NavigationBar from './components/NavigationBar';
+
 
 // --- 厳密な型定義（Interfaces） ---
 interface TimelineLog {
@@ -257,8 +259,11 @@ export default function Home() {
     try {
       // 【バグ修正】画面の入力「YYYY-MM-DDTHH:mm」に、明示的に日本時間「+09:00」を結合してパース
       // これにより、JavaScriptが勝手に世界標準時と誤認して日付が1日戻るバグを完全にシャットアウトします
-      const targetDate = new Date(`${logDateTime}:00+09:00`);
       const now = new Date();
+      const targetDate = new Date(`${logDateTime}:00+09:00`);
+
+      targetDate.setSeconds(now.getSeconds());
+      targetDate.setMilliseconds(now.getMilliseconds());
 
       if (targetDate > now) {
         alert('エラー：未来の日時でライフログを記録することはできません。現在または過去の日時を指定してください。');
@@ -303,6 +308,81 @@ export default function Home() {
       setIsSubmitting(false);
     }
   };
+
+
+  // 【追加】セッションがない（未ログイン）場合はログインフォームを強制表示
+  if (!session) {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center p-4 font-sans antialiased">
+        <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-md border border-gray-100 space-y-6">
+          <div className="text-center">
+            <h2 className="text-xl font-bold text-gray-800">
+              {isSignUp ? 'アカウント作成' : 'ログイン'}
+            </h2>
+            <p className="text-xs text-gray-400 mt-1">感情と服薬の相関ライフログ</p>
+          </div>
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            {isSignUp && (
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">お名前</label>
+                <input
+                  type="text"
+                  placeholder="山田 太郎"
+                  value={authName}
+                  onChange={(e) => setAuthName(e.target.value)}
+                  className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
+                  required
+                />
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-bold text-gray-600 mb-1">メールアドレス</label>
+              <input
+                type="email"
+                placeholder="example@email.com"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-gray-600 mb-1">パスワード</label>
+              <input
+                type="password"
+                placeholder="••••••••"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={authLoading}
+              className="w-full py-3.5 rounded-xl bg-emerald-600 font-bold text-white shadow-md disabled:bg-gray-400 active:scale-[0.98] transition-transform"
+            >
+              {authLoading ? '処理中...' : isSignUp ? 'アカウントを作成する' : 'ログインする'}
+            </button>
+          </form>
+
+          <div className="text-center pt-2 border-t border-gray-100">
+            <button
+              type="button"
+              onClick={() => setIsSignUp(!isSignUp)}
+              className="text-xs font-bold text-emerald-600 hover:underline"
+            >
+              {isSignUp ? 'すでにアカウントをお持ちの方はこちら' : '初めて利用される方はこちら（アカウント作成）'}
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   const calendarDays = generateCalendarDays(currentYear, currentMonth);
   const handlePrevMonth = () => { if (currentMonth === 1) { setCurrentYear(currentYear - 1); setCurrentMonth(12); } else { setCurrentMonth(currentMonth - 1); } };
@@ -480,6 +560,7 @@ export default function Home() {
           </div>
         </div>
       )}
+    <NavigationBar />
     </main>
   );
 }

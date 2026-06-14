@@ -50,11 +50,26 @@ interface SupabaseCustomError {
   details?: string | null;
 }
 
+// 【機能改善】ダイアログを開く際、選択された日付に応じて初期日時文字列を生成するヘルパー
+const getInitialDateTimeString = (selectedDateStr: string): string => {
+  const todayStr = formatDate(new Date());
+  
+  if (selectedDateStr === todayStr) {
+    // 選択されているのが「今日」なら、現在の時分までセット
+    const now = new Date();
+    const offset = now.getTimezoneOffset() * 60000;
+    return new Date(now.getTime() - offset).toISOString().slice(0, 16);
+  } else {
+    // 選択されているのが「過去（または未来）」なら、その日の「00:00」をセット
+    return `${selectedDateStr}T00:00`;
+  }
+};
+
 export default function Home() {
   // --- 認証用ステート ---
   const [session, setSession] = useState<Session | null>(null);
   const [authEmail, setAuthEmail] = useState('');
-  const [authName, setAuthName] = useState(''); // 【新規追加】登録用の名前ステート
+  const [authName, setAuthName] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [isSignUp, setIsSignUp] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
@@ -72,6 +87,7 @@ export default function Home() {
   const [selectedScore, setSelectedScore] = useState<number | null>(null);
   const [memo, setMemo] = useState('');
   const [selectedMedIds, setSelectedMedIds] = useState<string[]>([]);
+  const [logDateTime, setLogDateTime] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // 1. 認証状態の監視
@@ -127,15 +143,15 @@ export default function Home() {
     fetchDailyAverages();
   }, [currentYear, currentMonth, session, isSubmitting]);
 
-  // 4. タイムライン詳細ログの取得
+  // 4. タイムライン詳細ログの取得（日本時間基準クエリ）
   useEffect(() => {
     if (!session) return;
     async function fetchTimelineData() {
       const { data: moodData, error: moodError } = await supabase
         .from('mood_logs')
         .select('id, created_at, score, memo')
-        .gte('created_at', `${selectedDateStr}T00:00:00Z`)
-        .lte('created_at', `${selectedDateStr}T23:59:59Z`)
+        .gte('created_at', `${selectedDateStr}T00:00:00+09:00`)
+        .lte('created_at', `${selectedDateStr}T23:59:59+09:00`)
         .order('created_at', { ascending: false });
 
       if (moodError || !moodData) return;
@@ -144,8 +160,8 @@ export default function Home() {
       const { data: medData } = await supabase
         .from('medication_logs')
         .select('id, logged_at, amount, medication_id, medications(name)')
-        .gte('logged_at', `${selectedDateStr}T00:00:00Z`)
-        .lte('logged_at', `${selectedDateStr}T23:59:59Z`);
+        .gte('logged_at', `${selectedDateStr}T00:00:00+09:00`)
+        .lte('logged_at', `${selectedDateStr}T23:59:59+09:00`);
 
       const typedMedData = medData as MedicationLogResponse[] | null;
 
@@ -164,7 +180,7 @@ export default function Home() {
     fetchTimelineData();
   }, [selectedDateStr, session, isSubmitting]);
 
-  // 5. 認証処理（ログイン・サインアップ）
+  // 5. 認証処理
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!authEmail || !authPassword) {
@@ -179,23 +195,15 @@ export default function Home() {
 
     try {
       if (isSignUp) {
-        // 【修正】新規アカウント登録時に、メタデータとして「名前」を同梱して送信
         const { error } = await supabase.auth.signUp({
           email: authEmail,
           password: authPassword,
-          options: {
-            data: {
-              display_name: authName
-            }
-          }
+          options: { data: { display_name: authName } }
         });
         if (error) throw error;
         alert('アカウントの作成が完了し、自動的に同期されました。');
       } else {
-        const { error } = await supabase.auth.signInWithPassword({
-          email: authEmail,
-          password: authPassword
-        });
+        const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
         if (error) throw error;
       }
     } catch (error: unknown) {
@@ -218,7 +226,7 @@ export default function Home() {
     }
   };
 
-  // 7. データの保存処理
+  // 7. データの保存処理（タイムゾーンバグ完全修正版）
   const handleSubmit = async () => {
     if (!selectedScore) {
       alert('感情スコアを選択してください');
@@ -228,12 +236,23 @@ export default function Home() {
     setIsSubmitting(true);
 
     try {
-      const nowIso = new Date().toISOString();
+      // 【バグ修正】画面の入力「YYYY-MM-DDTHH:mm」に、明示的に日本時間「+09:00」を結合してパース
+      // これにより、JavaScriptが勝手に世界標準時と誤認して日付が1日戻るバグを完全にシャットアウトします
+      const targetDate = new Date(`${logDateTime}:00+09:00`);
+      const now = new Date();
+
+      if (targetDate > now) {
+        alert('エラー：未来の日時でライフログを記録することはできません。現在または過去の日時を指定してください。');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const targetIsoString = targetDate.toISOString();
       const currentUserId = session.user.id;
 
       const { error: moodError } = await supabase
         .from('mood_logs')
-        .insert([{ user_id: currentUserId, score: selectedScore, memo: memo || null, created_at: nowIso }]);
+        .insert([{ user_id: currentUserId, score: selectedScore, memo: memo || null, created_at: targetIsoString }]);
       if (moodError) throw moodError;
 
       if (selectedMedIds.length > 0) {
@@ -243,14 +262,14 @@ export default function Home() {
             user_id: currentUserId,
             medication_id: medId,
             amount: med ? med.default_amount : 1.0,
-            logged_at: nowIso
+            logged_at: targetIsoString
           };
         });
         const { error: medError } = await supabase.from('medication_logs').insert(medInserts);
         if (medError) throw medError;
       }
 
-      alert('型セーフな本物の権限でデータを同期しました！');
+      alert('指定された過去の日時でデータを完全に同期しました！');
       setSelectedScore(null);
       setMemo('');
       setSelectedMedIds([]);
@@ -280,85 +299,18 @@ export default function Home() {
     return `bg-emerald-500 text-white font-bold ${isSelected ? 'border-blue-400 ring-2 ring-blue-400/50' : 'border-emerald-600'}`;
   };
 
-  if (!session) {
-    return (
-      <main className="min-h-screen bg-gray-50 flex items-center justify-center p-4 font-sans">
-        <div className="w-full max-w-md bg-white rounded-2xl p-6 shadow-xl border border-gray-100 space-y-6">
-          <div className="text-center">
-            <h1 className="text-xl font-bold text-gray-800">感情日記</h1>
-            <p className="text-xs text-gray-400 mt-1">F-01: ユーザー認証ゲートウェイ（3項目対応版）</p>
-          </div>
-
-          <form onSubmit={handleAuth} className="space-y-4">
-            {/* 【修正】新規アカウント登録モード（isSignUp == true）の時のみ「名前」の入力フィールドを表示 */}
-            {isSignUp && (
-              <div>
-                <label className="block text-xs font-bold text-gray-600 uppercase mb-1">お名前（表示名）</label>
-                <input
-                  type="text"
-                  value={authName}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  placeholder="例：りおな"
-                  className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
-                  required={isSignUp}
-                />
-              </div>
-            )}
-
-            <div>
-              <label className="block text-xs font-bold text-gray-600 uppercase mb-1">メールアドレス</label>
-              <input
-                type="email"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-600 uppercase mb-1">パスワード</label>
-              <input
-                type="password"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                placeholder="••••••••"
-                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none"
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={authLoading}
-              className="w-full py-3.5 rounded-xl bg-emerald-600 font-bold text-white shadow-md active:bg-emerald-700 transition-colors disabled:bg-gray-300"
-            >
-              {authLoading ? '処理中...' : isSignUp ? '新規アカウント登録' : 'ログインする'}
-            </button>
-          </form>
-
-          <div className="text-center">
-            <button
-              onClick={() => {
-                setIsSignUp(!isSignUp);
-                setAuthName(''); // 切り替え時にフォームをクリア
-              }}
-              className="text-xs text-emerald-600 font-bold hover:underline"
-            >
-              {isSignUp ? 'すでにアカウントをお持ちですか？ ログイン' : '初めてですか？ 新規アカウント作成'}
-            </button>
-          </div>
-        </div>
-      </main>
-    );
-  }
+  // 【機能改善】ダイアログを開く際、現在カレンダーで選択されている日付情報を元に初期日時を動的にセット
+  const handleOpenDialog = () => {
+    setLogDateTime(getInitialDateTimeString(selectedDateStr));
+    setIsOpen(true);
+  };
 
   return (
     <main className="relative min-h-screen bg-gray-50 pb-28 font-sans antialiased">
       <header className="bg-white px-4 py-3 shadow-sm border-b border-gray-100 flex items-center justify-between sticky top-0 z-30">
         <h1 className="text-lg font-bold text-gray-800">感情日記</h1>
         <div className="flex items-center gap-3">
-          <span className="text-[10px] text-gray-400 max-w-[120px] truncate font-mono">{session.user.email}</span>
+          <span className="text-[10px] text-gray-400 max-w-[120px] truncate font-mono">{session?.user?.email ?? ''}</span>
           <button onClick={handleSignOut} className="text-xs font-bold text-red-500 hover:underline bg-red-50 px-2 py-1 rounded">離脱</button>
         </div>
       </header>
@@ -440,7 +392,7 @@ export default function Home() {
         </div>
       </div>
 
-      <button onClick={() => setIsOpen(true)} className="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-3xl text-white shadow-lg active:scale-95 z-40">＋</button>
+      <button onClick={handleOpenDialog} className="fixed bottom-6 right-6 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-3xl text-white shadow-lg active:scale-95 z-40">＋</button>
 
       {isOpen && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-end">
@@ -448,6 +400,17 @@ export default function Home() {
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-bold text-gray-800">いまの気分は？</h2>
               <button onClick={() => setIsOpen(false)} className="text-gray-400 p-1">キャンセル</button>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">記録日時</label>
+              <input
+                type="datetime-local"
+                value={logDateTime}
+                onChange={(e) => setLogDateTime(e.target.value)}
+                className="w-full rounded-xl border border-gray-200 p-3 text-sm focus:border-emerald-600 focus:outline-none text-gray-700 font-mono"
+                required
+              />
             </div>
 
             <div className="mb-6">

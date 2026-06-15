@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Header } from '@/app/components/Header';
 import NavigationBar from '@/app/components/NavigationBar';
+import { ModalDialog } from '@/app/components/ModalDialog';
+import { useAppModal } from '@/app/hooks/useAppModal';
 import { Session } from '@supabase/supabase-js';
 
 // --- SVGアイコンコンポーネント ---
@@ -64,6 +66,8 @@ export default function Settings(): React.JSX.Element {
     return () => subscription.unsubscribe();
   }, []);
 
+  const { modal, showAlert, showConfirm, handlePromptChange } = useAppModal();
+
   // 2. プロフィールと統計データの取得
   useEffect(() => {
     if (!session) return;
@@ -108,10 +112,10 @@ export default function Settings(): React.JSX.Element {
 
       setSavedDisplayName(displayName);
       setIsEditing(false);
-      alert('プロフィールを更新しました');
+      await showAlert('プロフィールを更新しました');
     } catch (error: unknown) { 
       const message = error instanceof Error ? error.message : String(error);
-      alert(`更新失敗: ${message}`);
+      await showAlert(`更新失敗: ${message}`);
     } finally { 
       setIsUpdatingProfile(false); 
     }
@@ -123,11 +127,17 @@ export default function Settings(): React.JSX.Element {
   };
 
   const handleExportCSV = async () => {
-    if (!session) return alert('ログインが必要です');
+    if (!session) {
+      await showAlert('ログインが必要です');
+      return;
+    }
     try {
       const { data: moodLogs, error: moodError } = await supabase.from('mood_logs').select('created_at, score, memo').order('created_at', { ascending: true });
       if (moodError) throw moodError;
-      if (!moodLogs || moodLogs.length === 0) return alert('エクスポートするデータがありません');
+      if (!moodLogs || moodLogs.length === 0) {
+        await showAlert('エクスポートするデータがありません');
+        return;
+      }
 
       const bom = new Uint8Array([0xEF, 0xBB, 0xBF]);
       let csvContent = '記録日時,感情スコア,メモ\n';
@@ -146,59 +156,73 @@ export default function Settings(): React.JSX.Element {
       document.body.removeChild(link);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      alert(`エクスポート失敗: ${message}`);
+      await showAlert(`エクスポート失敗: ${message}`);
     }
   };
 
   const handleResetData = async () => {
-    if (confirm('警告：これまでに記録したすべての感情ログと服薬履歴が完全に削除されます。本当に初期化しますか？')) {
-      try {
-        const userId = session?.user.id;
-        if (!userId) return;
-        const { error: moodErr } = await supabase.from('mood_logs').delete().eq('user_id', userId);
-        const { error: medErr } = await supabase.from('medication_logs').delete().eq('user_id', userId);
-        if (moodErr || medErr) throw new Error('一部データの削除に失敗しました');
+    const confirmed = await showConfirm(
+      '警告：これまでに記録したすべての感情ログと服薬履歴が完全に削除されます。本当に初期化しますか？',
+      '初期化の確認',
+      '初期化する',
+      'キャンセル'
+    );
+    if (!confirmed) return;
 
-        alert('すべてのデータを初期化しました。');
-        setTotalMoodLogs(0); setTotalMedicationLogs(0);
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        alert(`初期化失敗: ${message}`);
-      }
+    try {
+      const userId = session?.user.id;
+      if (!userId) return;
+      const { error: moodErr } = await supabase.from('mood_logs').delete().eq('user_id', userId);
+      const { error: medErr } = await supabase.from('medication_logs').delete().eq('user_id', userId);
+      if (moodErr || medErr) throw new Error('一部データの削除に失敗しました');
+
+      await showAlert('すべてのデータを初期化しました。');
+      setTotalMoodLogs(0); setTotalMedicationLogs(0);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await showAlert(`初期化失敗: ${message}`);
     }
   };
 
   const handleLogout = async () => {
-    if (confirm('ログアウトしますか？')) {
-      await supabase.auth.signOut();
-      router.push('/');
-    }
+    const confirmed = await showConfirm('ログアウトしますか？', 'ログアウトの確認', 'ログアウトする', 'キャンセル');
+    if (!confirmed) return;
+    await supabase.auth.signOut();
+    router.push('/');
   };
 
   // アカウント退会処理
   const handleDeleteAccount = async () => {
-    if (confirm('【警告】本当にアカウントを退会しますか？\nこれまでの感情ログや服薬履歴などのデータがすべて完全に削除され、元に戻すことはできません。')) {
-      const secondConfirm = confirm('最終確認です。\n本当にすべてのデータを削除して退会しますか？');
-      
-      if (secondConfirm) {
-        try {
-          const userId = session?.user.id;
-          if (!userId) return;
+    const firstConfirm = await showConfirm(
+      '【警告】本当にアカウントを退会しますか？\nこれまでの感情ログや服薬履歴などのデータがすべて完全に削除され、元に戻すことはできません。',
+      '退会の確認',
+      '退会する',
+      'キャンセル'
+    );
+    if (!firstConfirm) return;
 
-          // アプリ上のデータをすべて削除
-          await supabase.from('mood_logs').delete().eq('user_id', userId);
-          await supabase.from('medication_logs').delete().eq('user_id', userId);
-          await supabase.from('profiles').delete().eq('id', userId);
+    const secondConfirm = await showConfirm(
+      '最終確認です。\n本当にすべてのデータを削除して退会しますか？',
+      '最終確認',
+      'はい',
+      'いいえ'
+    );
+    if (!secondConfirm) return;
 
-          // ログアウト処理
-          await supabase.auth.signOut();
-          alert('退会処理が完了し、すべてのデータが削除されました。\nご利用ありがとうございました。');
-          router.push('/');
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
-          alert(`退会処理に失敗しました: ${message}`);
-        }
-      }
+    try {
+      const userId = session?.user.id;
+      if (!userId) return;
+
+      await supabase.from('mood_logs').delete().eq('user_id', userId);
+      await supabase.from('medication_logs').delete().eq('user_id', userId);
+      await supabase.from('profiles').delete().eq('id', userId);
+
+      await supabase.auth.signOut();
+      await showAlert('退会処理が完了し、すべてのデータが削除されました。\nご利用ありがとうございました。');
+      router.push('/');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      await showAlert(`退会処理に失敗しました: ${message}`);
     }
   };
 
@@ -330,6 +354,23 @@ export default function Settings(): React.JSX.Element {
           <p style={{ textAlign: 'center', fontSize: 11, color: '#C4BDB3', margin: '10px 0' }}>感情日記アプリ v1.0.0</p>
 
         </div>
+
+        {modal && (
+          <ModalDialog
+            open={Boolean(modal)}
+            title={modal.title}
+            message={modal.message}
+            promptValue={modal.promptValue}
+            promptPlaceholder={modal.promptPlaceholder}
+            onPromptChange={handlePromptChange}
+            primaryText={modal.primaryText}
+            secondaryText={modal.secondaryText}
+            onPrimary={modal.onPrimary}
+            onSecondary={modal.onSecondary}
+            isDanger={modal.isDanger}
+            onClose={modal.onSecondary ?? modal.onPrimary}
+          />
+        )}
 
         <NavigationBar />
 

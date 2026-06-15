@@ -1,5 +1,7 @@
 'use client';
 
+import React from 'react';
+
 interface TimelineLog {
   id: string;
   time: string;
@@ -12,62 +14,79 @@ interface TimelineListProps {
   selectedDateStr: string;
   timelineLogs: TimelineLog[];
   getScoreColor: (score: number) => { bg: string; text: string };
-  SCORE_EMOJIS: string[];
+  onLogClick?: (log: TimelineLog) => void;
 }
 
 export function TimelineList({
-  selectedDateStr,
   timelineLogs,
   getScoreColor,
-  SCORE_EMOJIS,
+  onLogClick,
 }: TimelineListProps) {
-  const selectedDateObj = new Date(selectedDateStr);
-  const formattedSelectedDay = `${selectedDateObj.getMonth() + 1}月${selectedDateObj.getDate()}日`;
-  const dayOfWeekStr = ['日', '月', '火', '水', '木', '金', '土'][selectedDateObj.getDay()];
-
   return (
-    <div style={{ margin: '20px 16px 0' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <span style={{ fontSize: 15, fontWeight: 700, color: '#2A2420' }}>詳細ログ</span>
-        <span style={{ fontSize: 12, color: '#8A8278' }}>{formattedSelectedDay}（{dayOfWeekStr}）</span>
-      </div>
-
+    <div style={{ padding: '0 20px', marginTop: 20 }}>
+      <h3 style={{ fontSize: 16, fontWeight: 800, color: '#2A2420', marginBottom: 12 }}>
+        本日のタイムライン
+      </h3>
       {timelineLogs.length === 0 ? (
-        <div style={{ backgroundColor: '#FFFFFF', borderRadius: 20, padding: '24px 20px', textAlign: 'center', border: '1px solid rgba(0,0,0,0.01)' }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>📝</div>
-          <p style={{ fontSize: 14, color: '#B0A8A0', margin: 0 }}>この日のライフログはありません</p>
-        </div>
+        <p style={{ fontSize: 13, color: '#8A8278', textAlign: 'center', marginTop: 20 }}>
+          この日の記録はありません
+        </p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {timelineLogs.map((log) => {
-            const col = getScoreColor(log.score);
-            const emoji = SCORE_EMOJIS[log.score - 1] || '😐';
+            const colors = getScoreColor(log.score);
             return (
-              <div key={log.id} style={{ backgroundColor: '#FFFFFF', borderRadius: 20, padding: '14px 16px', display: 'flex', gap: 12, alignItems: 'flex-start', boxShadow: '0 1px 3px rgba(0,0,0,0.01)' }}>
-                <div style={{ width: 44, height: 44, borderRadius: '50%', backgroundColor: col.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 20 }}>
-                  {emoji}
+              <div
+                key={log.id}
+                onClick={() => onLogClick?.(log)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  backgroundColor: '#FFFFFF',
+                  borderRadius: 16,
+                  padding: '12px 16px',
+                  border: '1px solid rgba(42,36,32,0.05)',
+                  cursor: 'pointer',
+                  transition: 'background-color 0.2s',
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#FDFBF7')}
+                onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#FFFFFF')}
+              >
+                {/* スコア数値のみを表示（絵文字は完全排除） */}
+                <div
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: '50%',
+                    backgroundColor: colors.bg,
+                    color: colors.text,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 14,
+                    fontWeight: 800,
+                    marginRight: 12,
+                    flexShrink: 0,
+                  }}
+                >
+                  {log.score}
                 </div>
 
-                <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: '#8A8278' }}>{log.time}</span>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: col.bg, backgroundColor: col.bg + '20', padding: '2px 10px', borderRadius: 999 }}>
-                      スコア {log.score}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: '#2A2420' }}>
+                      {log.time}
                     </span>
+                    {log.meds.length > 0 && (
+                      <span style={{ fontSize: 11, color: '#7CB88A', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {log.meds.join(', ')}
+                      </span>
+                    )}
                   </div>
-
-                  {log.meds.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
-                      {log.meds.map((m, idx) => (
-                        <span key={idx} style={{ fontSize: 11, fontWeight: 600, backgroundColor: '#F0EBE3', color: '#6B5840', padding: '2px 8px', borderRadius: 999 }}>
-                          {m}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
                   {log.memo && (
-                    <p style={{ fontSize: 13, color: '#5A5450', margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.4 }}>{log.memo}</p>
+                    <p style={{ margin: '2px 0 0', fontSize: 12, color: '#6B6060', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {log.memo}
+                    </p>
                   )}
                 </div>
               </div>

@@ -5,6 +5,8 @@ import { supabase } from '@/lib/supabase';
 import { Session } from '@supabase/supabase-js';
 import NavigationBar from '@/app/components/NavigationBar';
 import {Header} from '@/app/components/Header';
+import { ModalDialog } from '@/app/components/ModalDialog';
+import { useAppModal } from '@/app/hooks/useAppModal';
 
 // --- 新しく作ったファイルからアイコンを読み込む ---
 import { 
@@ -37,6 +39,7 @@ export default function MedicationsPage(): React.JSX.Element {
   const [amount, setAmount] = useState<string>('1'); 
   const [iconType, setIconType] = useState<'tablet' | 'capsule'>('tablet');
   const [isSaving, setIsSaving] = useState(false);
+  const { modal, showAlert, showConfirm, handlePromptChange } = useAppModal();
 
   async function fetchMedications(userId: string) {
     setIsLoading(true);
@@ -113,7 +116,7 @@ export default function MedicationsPage(): React.JSX.Element {
       closeModal();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      alert(`保存に失敗しました: ${message}`);
+      await showAlert(`保存に失敗しました: ${message}`);
     } finally {
       setIsSaving(false);
     }
@@ -121,7 +124,8 @@ export default function MedicationsPage(): React.JSX.Element {
 
   const handleDelete = async () => {
     if (!session || !editingId) return;
-    if (!confirm(`「${name}」を削除しますか？`)) return;
+    const confirmed = await showConfirm(`「${name}」を削除しますか？`, '削除の確認', '削除する', 'キャンセル');
+    if (!confirmed) return;
 
     try {
       const { error } = await supabase.from('medications').delete().eq('id', editingId);
@@ -131,7 +135,7 @@ export default function MedicationsPage(): React.JSX.Element {
       closeModal();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      alert(`削除に失敗しました: ${message}`);
+      await showAlert(`削除に失敗しました: ${message}`);
     }
   };
 
@@ -184,12 +188,27 @@ export default function MedicationsPage(): React.JSX.Element {
             ))
           )}
         </div>
+        {modal && (
+          <ModalDialog
+            open={Boolean(modal)}
+            title={modal.title}
+            message={modal.message}
+            promptValue={modal.promptValue}
+            promptPlaceholder={modal.promptPlaceholder}
+            onPromptChange={handlePromptChange}
+            primaryText={modal.primaryText}
+            secondaryText={modal.secondaryText}
+            onPrimary={modal.onPrimary}
+            onSecondary={modal.onSecondary}
+            isDanger={modal.isDanger}
+            onClose={modal.onSecondary}
+          />
+        )}
 
         {/* モーダル */}
         {isModalOpen && (
           <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(42, 36, 32, 0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20, backdropFilter: 'blur(2px)' }}>
             <div style={{ backgroundColor: '#FFFFFF', borderRadius: 24, width: '100%', maxWidth: 340, padding: 24, boxShadow: '0 10px 25px rgba(0,0,0,0.1)' }}>
-              
               <h3 style={{ fontSize: 16, fontWeight: 800, color: '#2A2420', margin: '0 0 20px', textAlign: 'center' }}>
                 {modalMode === 'add' ? '新しいお薬の登録' : 'お薬の編集'}
               </h3>
@@ -201,11 +220,18 @@ export default function MedicationsPage(): React.JSX.Element {
                     <button
                       type="button"
                       onClick={() => setIconType('tablet')}
-                      style={{ 
-                        flex: 1, padding: '12px', borderRadius: 12, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-                        border: iconType === 'tablet' ? '2px solid #7CB88A' : '1px solid #E5E7EB', 
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        borderRadius: 12,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 6,
+                        border: iconType === 'tablet' ? '2px solid #7CB88A' : '1px solid #E5E7EB',
                         backgroundColor: iconType === 'tablet' ? '#F0FDF4' : '#FFFFFF',
-                        transition: 'all 0.2s'
+                        transition: 'all 0.2s',
                       }}
                     >
                       <TabletIcon color={iconType === 'tablet' ? '#7CB88A' : '#8A8278'} size={28} />
@@ -214,11 +240,18 @@ export default function MedicationsPage(): React.JSX.Element {
                     <button
                       type="button"
                       onClick={() => setIconType('capsule')}
-                      style={{ 
-                        flex: 1, padding: '12px', borderRadius: 12, cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
-                        border: iconType === 'capsule' ? '2px solid #7CB88A' : '1px solid #E5E7EB', 
+                      style={{
+                        flex: 1,
+                        padding: '12px',
+                        borderRadius: 12,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 6,
+                        border: iconType === 'capsule' ? '2px solid #7CB88A' : '1px solid #E5E7EB',
                         backgroundColor: iconType === 'capsule' ? '#F0FDF4' : '#FFFFFF',
-                        transition: 'all 0.2s'
+                        transition: 'all 0.2s',
                       }}
                     >
                       <CapsuleIcon color={iconType === 'capsule' ? '#7CB88A' : '#8A8278'} size={28} />
@@ -229,13 +262,13 @@ export default function MedicationsPage(): React.JSX.Element {
 
                 <div>
                   <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#8A8278', marginBottom: 6 }}>お薬の名前</label>
-                  <input 
-                    type="text" 
-                    value={name} 
-                    onChange={(e) => setName(e.target.value)} 
-                    placeholder="例: ロキソニン" 
-                    style={{ width: '100%', borderRadius: 12, border: '1px solid #E5E7EB', backgroundColor: '#FAF7F2', padding: '12px 14px', fontSize: 14, color: '#2A2420' }} 
-                    required 
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="例: ロキソニン"
+                    style={{ width: '100%', borderRadius: 12, border: '1px solid #E5E7EB', backgroundColor: '#FAF7F2', padding: '12px 14px', fontSize: 14, color: '#2A2420' }}
+                    required
                   />
                 </div>
 
@@ -264,16 +297,16 @@ export default function MedicationsPage(): React.JSX.Element {
                 </div>
 
                 <div style={{ display: 'flex', gap: 12, marginTop: 8 }}>
-                  <button 
-                    type="button" 
-                    onClick={closeModal} 
+                  <button
+                    type="button"
+                    onClick={closeModal}
                     style={{ flex: 1, padding: '14px', borderRadius: 12, backgroundColor: '#F3F4F6', border: 'none', color: '#4B5563', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
                   >
                     キャンセル
                   </button>
-                  <button 
-                    type="submit" 
-                    disabled={isSaving} 
+                  <button
+                    type="submit"
+                    disabled={isSaving}
                     style={{ flex: 1, padding: '14px', borderRadius: 12, backgroundColor: '#7CB88A', border: 'none', color: '#FFFFFF', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}
                   >
                     {isSaving ? '保存中...' : '保存する'}
@@ -282,15 +315,14 @@ export default function MedicationsPage(): React.JSX.Element {
               </form>
 
               {modalMode === 'edit' && (
-                <button 
-                  type="button" 
-                  onClick={handleDelete} 
+                <button
+                  type="button"
+                  onClick={handleDelete}
                   style={{ width: '100%', padding: '12px', borderRadius: 12, backgroundColor: '#FFF5F5', border: '1px solid #FEE2E2', color: '#DC2626', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6, marginTop: 24 }}
                 >
                   <TrashIcon color="#DC2626" /> このお薬を削除する
                 </button>
               )}
-
             </div>
           </div>
         )}

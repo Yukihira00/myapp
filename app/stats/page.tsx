@@ -6,8 +6,6 @@ import { supabase } from "@/lib/supabase";
 import { Session } from "@supabase/supabase-js";
 
 // 共通パーツのインポート
-import NavigationBar from "@/app/components/NavigationBar";
-import { FloatingActionButton } from "@/app/components/FloatingActionButton";
 import { AddEntryModal } from "@/app/components/AddEntryModal";
 
 // 統計専用子コンポーネント群のインポート
@@ -48,12 +46,6 @@ interface SupabaseCustomError {
 }
 
 const DAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
-
-const getInitialDateTimeString = (): string => {
-  const now = new Date();
-  const offset = now.getTimezoneOffset() * 60000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 16);
-};
 
 function formatLocalIso(date: Date, includeTime = true): string {
   const yyyy = date.getFullYear();
@@ -375,16 +367,14 @@ export default function StatsPage() {
       const targetIsoString = targetDate.toISOString();
       const currentUserId = session.user.id;
 
-      const { error: moodError } = await supabase
-        .from("mood_logs")
-        .insert([
-          {
-            user_id: currentUserId,
-            score: selectedScore,
-            memo: memo || null,
-            created_at: targetIsoString,
-          },
-        ]);
+      const { error: moodError } = await supabase.from("mood_logs").insert([
+        {
+          user_id: currentUserId,
+          score: selectedScore,
+          memo: memo || null,
+          created_at: targetIsoString,
+        },
+      ]);
       if (moodError) throw moodError;
 
       if (selectedMedIds.length > 0) {
@@ -411,11 +401,6 @@ export default function StatsPage() {
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const handleOpenDialog = () => {
-    setLogDateTime(getInitialDateTimeString());
-    setIsOpen(true);
   };
 
   if (loadingAuth) {
@@ -523,18 +508,7 @@ export default function StatsPage() {
             alignItems: "center",
             backgroundColor: "#FAF7F2",
           }}
-        >
-          <h1
-            style={{
-              fontSize: 22,
-              fontWeight: 800,
-              color: "#2A2420",
-              margin: 0,
-            }}
-          >
-            統計レポート
-          </h1>
-        </div>
+        ></div>
 
         <div
           className="overflow-y-auto flex-1 pb-4"
@@ -689,9 +663,6 @@ export default function StatsPage() {
             </>
           )}
         </div>
-
-        <FloatingActionButton onClick={handleOpenDialog} />
-
         {isOpen && (
           <AddEntryModal
             onClose={() => setIsOpen(false)}
@@ -714,8 +685,6 @@ export default function StatsPage() {
             isSubmitting={isSubmitting}
           />
         )}
-
-        <NavigationBar />
       </div>
     </div>
   );

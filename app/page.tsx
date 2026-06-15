@@ -7,14 +7,11 @@ import { formatDate } from "@/lib/utils";
 import { Session } from "@supabase/supabase-js";
 
 // 各種共通コンポーネントのインポート
-import { Header } from "@/app/components/Header";
 import { CalendarView } from "@/app/components/CalendarView";
 import { TimelineList } from "@/app/components/TimelineList";
 import { AddEntryModal } from "@/app/components/AddEntryModal";
-import { FloatingActionButton } from "@/app/components/FloatingActionButton";
 import { ModalDialog } from "@/app/components/ModalDialog";
 import { useAppModal } from "@/app/hooks/useAppModal";
-import NavigationBar from "@/app/components/NavigationBar";
 
 interface TimelineLog {
   id: string;
@@ -69,17 +66,6 @@ const SCORE_COLORS = [
 
 const getScoreColor = (score: number) =>
   SCORE_COLORS[Math.min(Math.max(Math.round(score), 1), 10) - 1];
-
-const getInitialDateTimeString = (selectedDateStr: string): string => {
-  const todayStr = formatDate(new Date());
-  if (selectedDateStr === todayStr) {
-    const now = new Date();
-    const offset = now.getTimezoneOffset() * 60000;
-    return new Date(now.getTime() - offset).toISOString().slice(0, 16);
-  } else {
-    return `${selectedDateStr}T00:00`;
-  }
-};
 
 export default function Home(): React.JSX.Element {
   const [session, setSession] = useState<Session | null>(null);
@@ -265,16 +251,14 @@ export default function Home(): React.JSX.Element {
       const targetIsoString = targetDate.toISOString();
       const currentUserId = session.user.id;
 
-      const { error: moodError } = await supabase
-        .from("mood_logs")
-        .insert([
-          {
-            user_id: currentUserId,
-            score: selectedScore,
-            memo: memo || null,
-            created_at: targetIsoString,
-          },
-        ]);
+      const { error: moodError } = await supabase.from("mood_logs").insert([
+        {
+          user_id: currentUserId,
+          score: selectedScore,
+          memo: memo || null,
+          created_at: targetIsoString,
+        },
+      ]);
       if (moodError) throw moodError;
 
       if (selectedMedIds.length > 0) {
@@ -301,11 +285,6 @@ export default function Home(): React.JSX.Element {
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const handleOpenDialog = () => {
-    setLogDateTime(getInitialDateTimeString(selectedDateStr));
-    setIsOpen(true);
   };
 
   const handlePrevMonth = () => {
@@ -523,8 +502,6 @@ export default function Home(): React.JSX.Element {
           overflow: "hidden",
         }}
       >
-        <Header />
-
         <div
           className="overflow-y-auto flex-1 pb-4"
           style={{ scrollbarWidth: "none", overflowY: "auto" }}
@@ -578,9 +555,6 @@ export default function Home(): React.JSX.Element {
             }}
           />
         </div>
-
-        <FloatingActionButton onClick={handleOpenDialog} />
-
         {isOpen && (
           <AddEntryModal
             onClose={() => setIsOpen(false)}
@@ -613,8 +587,6 @@ export default function Home(): React.JSX.Element {
             onClose={modal.onSecondary}
           />
         )}
-
-        <NavigationBar />
       </div>
     </div>
   );
